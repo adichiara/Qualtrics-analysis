@@ -1,0 +1,3 @@
+question_key,question_id,question_text,question_type,attribute,column,scale_type,response_code,response_label,n,valid_pct,valid_n,question_total_n
+QID19730742,Q2.10,Have you been deployed?,MC,,Q2.10,nominal,0,No,56,55.45,101,101
+QID19730742,Q2.10,Have you been deployed?,MC,,Q2.10,nominal,1,Yes,45,44.55,101,101

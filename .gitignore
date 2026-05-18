@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.venv/
+runs/
+analysis_output/
+*.csv
+*.xlsx
+*.docx
+*.log
+qualtrics_frequency_config.json
+!tests/fixtures/**/*.csv
