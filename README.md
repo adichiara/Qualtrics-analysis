@@ -15,16 +15,17 @@ pip install -e '.[dev]'
 python -m qualtrics_pipeline.export --survey-id SV_123 --outdir runs/example
 ```
 
-Produces:
-- `responses_raw.csv`
-- `responses_clean.csv`
+Produces contract artifacts:
 - `survey_metadata.json`
 - `questions_meta.json`
 - `column_map.json`
 - `codebook.csv`
 - `run_manifest.json`
 
-Privacy defaults to `deidentified` and strips direct identifiers. Use `--privacy-mode internal` or `--privacy-mode raw` when needed.
+Data files by privacy mode:
+- `deidentified` (default): `responses_clean.csv` only
+- `internal`: `responses_raw.csv` + `responses_clean.csv`
+- `raw`: `responses_raw.csv` only
 
 ## Frequency stage
 
