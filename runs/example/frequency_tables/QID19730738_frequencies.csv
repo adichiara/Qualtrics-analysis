@@ -1,0 +1,17 @@
+question_key,question_id,question_text,question_type,attribute,column,scale_type,response_code,response_label,n,valid_pct,valid_n,question_total_n
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,10,Military Intelligence,9,8.91,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,2,Air Defense Artillery,9,8.91,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,4,Aviation,9,8.91,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,8,Infantry,9,8.91,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,11,Military Police,8,7.92,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,3,Armor,8,7.92,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,1,Administration,7,6.93,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,15,Transportation,7,6.93,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,12,Signal,6,5.94,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,14,Supply,6,5.94,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,6,Field Artillery,6,5.94,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,13,Special Forces,4,3.96,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,16,Other,4,3.96,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,5,Corp of Engineers,4,3.96,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,9,Medical,3,2.97,101,101
+QID19730738,Q2.6,What is your primary MOS Branch category?,MC,,Q2.6,nominal,7,Food Service,2,1.98,101,101
