@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 SENSITIVE_COLUMNS = {
     "RecipientFirstName",
     "RecipientLastName",
@@ -22,10 +21,24 @@ SENSITIVE_COLUMNS = {
 }
 
 METADATA_COLUMNS = {
-    "StartDate", "EndDate", "Status", "IPAddress", "Progress", "Duration (in seconds)",
-    "Finished", "RecordedDate", "ResponseId", "RecipientLastName", "RecipientFirstName",
-    "RecipientEmail", "ExternalReference", "LocationLatitude", "LocationLongitude", "DistributionChannel",
+    "StartDate",
+    "EndDate",
+    "Status",
+    "IPAddress",
+    "Progress",
+    "Duration (in seconds)",
+    "Finished",
+    "RecordedDate",
+    "ResponseId",
+    "RecipientLastName",
+    "RecipientFirstName",
+    "RecipientEmail",
+    "ExternalReference",
+    "LocationLatitude",
+    "LocationLongitude",
+    "DistributionChannel",
     "UserLanguage",
+    "date",
 }
 
 MULTI_SELECTORS = {"MAVR", "MAHR", "MACOL", "MSB"}
@@ -77,6 +90,10 @@ def fetch_responses_df(survey_id: str):
     return Responses().get_survey_responses(survey=survey_id)
 
 
+def _detect_text_entry_suffix(column: str) -> bool:
+    return column.endswith("_TEXT")
+
+
 def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) -> dict[str, Any]:
     qtype = q.get("QuestionType", "")
     selector = q.get("Selector", "")
@@ -84,7 +101,12 @@ def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) 
     tag = q.get("DataExportTag", "")
     response_labels: dict[str, str] = {}
     sub_question_text = ""
-    is_open_text = qtype in {"TE", "HL", "FileUpload", "Signature", "Calendar"}
+    is_text_entry_suffix = _detect_text_entry_suffix(col)
+    is_open_text = qtype in {"TE", "HL", "FileUpload", "Signature", "Calendar"} or is_text_entry_suffix
+
+    parent_choice_code = ""
+    parent_choice_label = ""
+    parent_question_key = qid or tag
 
     choices = q.get("Choices", {})
     answers = q.get("Answers", {})
@@ -95,10 +117,21 @@ def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) 
             response_labels = {"0": "Not selected", "1": "Selected"}
             for cid, cnode in choices.items():
                 recode = str(recodes.get(cid, cid))
-                if col.endswith(f"_{recode}") or col.endswith(f"_{cid}"):
+                if col.endswith(f"_{recode}") or col.endswith(f"_{cid}") or col.endswith(f"_{cid}_TEXT"):
                     sub_question_text = _extract_display(cnode)
+                    parent_choice_code = recode
+                    parent_choice_label = _extract_display(cnode)
         else:
-            response_labels = {str(recodes.get(cid, cid)): _extract_display(cnode) for cid, cnode in choices.items()}
+            response_labels = {
+                str(recodes.get(cid, cid)): _extract_display(cnode) for cid, cnode in choices.items()
+            }
+            for cid, cnode in choices.items():
+                recode = str(recodes.get(cid, cid))
+                if col.endswith(f"_{cid}_TEXT") or col.endswith(f"_{recode}_TEXT"):
+                    parent_choice_code = recode
+                    parent_choice_label = _extract_display(cnode)
+                    sub_question_text = _extract_display(cnode)
+
     elif qtype == "Matrix":
         response_labels = {str(k): _extract_display(v) for k, v in answers.items()}
         for cid, cnode in choices.items():
@@ -107,14 +140,8 @@ def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) 
                 break
     elif qtype == "NPS":
         response_labels = {str(i): str(i) for i in range(11)}
-    elif qtype == "RO":
-        for cid, cnode in choices.items():
-            if col.endswith(f"_{cid}"):
-                sub_question_text = _extract_display(cnode)
-                break
-    elif qtype in {"CS", "Slider", "PGR", "DD", "Timing", "SBS"}:
-        # numeric/special structures; keep labels empty by default
-        pass
+
+    text_reporting_mode = "summarize_later" if is_text_entry_suffix else "skip"
 
     return {
         "survey_id": survey_id,
@@ -130,6 +157,11 @@ def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) 
         "is_open_text": is_open_text,
         "is_metadata": False,
         "is_sensitive": col in SENSITIVE_COLUMNS,
+        "is_text_entry_suffix": is_text_entry_suffix,
+        "parent_question_key": parent_question_key,
+        "parent_choice_code": parent_choice_code,
+        "parent_choice_label": parent_choice_label,
+        "text_reporting_mode": text_reporting_mode,
     }
 
 
@@ -144,34 +176,47 @@ def build_column_map(survey_id: str, columns: list[str], questions_meta: dict[st
     for col in columns:
         matched = None
         for tag, pair in tagged.items():
-            if col == tag or col.startswith(f"{tag}_") or col.startswith(f"{tag}#"):
+            if col == tag or col.startswith(f"{tag}_") or col.startswith(f"{tag}#") or col.startswith(f"{tag}."):
                 matched = pair
                 break
         if matched is None:
-            out.append({
-                "survey_id": survey_id,
-                "qid": "",
-                "data_export_tag": "",
-                "column": col,
-                "question_type": "",
-                "selector": "",
-                "subselector": "",
-                "question_text": "",
-                "sub_question_text": "",
-                "response_labels": {},
-                "is_open_text": False,
-                "is_metadata": col in METADATA_COLUMNS,
-                "is_sensitive": col in SENSITIVE_COLUMNS,
-            })
+            out.append(
+                {
+                    "survey_id": survey_id,
+                    "qid": "",
+                    "data_export_tag": "",
+                    "column": col,
+                    "question_type": "",
+                    "selector": "",
+                    "subselector": "",
+                    "question_text": "",
+                    "sub_question_text": "",
+                    "response_labels": {},
+                    "is_open_text": _detect_text_entry_suffix(col),
+                    "is_metadata": col in METADATA_COLUMNS,
+                    "is_sensitive": col in SENSITIVE_COLUMNS,
+                    "is_text_entry_suffix": _detect_text_entry_suffix(col),
+                    "parent_question_key": "",
+                    "parent_choice_code": "",
+                    "parent_choice_label": "",
+                    "text_reporting_mode": "summarize_later" if _detect_text_entry_suffix(col) else "skip",
+                }
+            )
             continue
         qid, q = matched
         out.append(_map_question_column(col, survey_id, qid, q))
     return out
 
 
-
-
-def build_run_manifest(survey_id: str, privacy_mode: str, rows_raw: int, rows_output: int, data_file: str, columns_contract: list[str], artifacts: list[str]) -> dict[str, Any]:
+def build_run_manifest(
+    survey_id: str,
+    privacy_mode: str,
+    rows_raw: int,
+    rows_output: int,
+    data_file: str,
+    columns_contract: list[str],
+    artifacts: list[str],
+) -> dict[str, Any]:
     return {
         "survey_id": survey_id,
         "exported_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -182,6 +227,7 @@ def build_run_manifest(survey_id: str, privacy_mode: str, rows_raw: int, rows_ou
         "columns_contract": columns_contract,
         "artifacts": artifacts,
     }
+
 
 def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
     with path.open("w", encoding="utf-8", newline="") as f:
@@ -220,7 +266,7 @@ def main() -> None:
         raw_df.to_csv(outdir / "responses_raw.csv", index=False)
         clean_df = clean_df.drop(columns=[c for c in clean_df.columns if c in SENSITIVE_COLUMNS], errors="ignore")
         clean_df.to_csv(outdir / "responses_clean.csv", index=False)
-    else:  # raw
+    else:
         raw_df.to_csv(outdir / "responses_raw.csv", index=False)
 
     source_df = clean_df if args.privacy_mode != "raw" else raw_df
@@ -231,17 +277,47 @@ def main() -> None:
     cmap = build_column_map(args.survey_id, list(source_df.columns), questions_meta)
     (outdir / "column_map.json").write_text(json.dumps(cmap, indent=2), encoding="utf-8")
 
-    codebook_rows = [{
-        "column": row["column"], "qid": row["qid"], "data_export_tag": row["data_export_tag"],
-        "question_type": row["question_type"], "question_text": row["question_text"],
-        "sub_question_text": row["sub_question_text"], "is_open_text": row["is_open_text"],
-        "is_metadata": row["is_metadata"], "is_sensitive": row["is_sensitive"],
-        "response_labels": json.dumps(row["response_labels"], ensure_ascii=False),
-    } for row in cmap]
-    write_csv(outdir / "codebook.csv", codebook_rows, [
-        "column", "qid", "data_export_tag", "question_type", "question_text", "sub_question_text",
-        "is_open_text", "is_metadata", "is_sensitive", "response_labels",
-    ])
+    codebook_rows = [
+        {
+            "column": row["column"],
+            "qid": row["qid"],
+            "data_export_tag": row["data_export_tag"],
+            "question_type": row["question_type"],
+            "question_text": row["question_text"],
+            "sub_question_text": row["sub_question_text"],
+            "is_open_text": row["is_open_text"],
+            "is_metadata": row["is_metadata"],
+            "is_sensitive": row["is_sensitive"],
+            "is_text_entry_suffix": row["is_text_entry_suffix"],
+            "parent_question_key": row["parent_question_key"],
+            "parent_choice_code": row["parent_choice_code"],
+            "parent_choice_label": row["parent_choice_label"],
+            "text_reporting_mode": row["text_reporting_mode"],
+            "response_labels": json.dumps(row["response_labels"], ensure_ascii=False),
+        }
+        for row in cmap
+    ]
+    write_csv(
+        outdir / "codebook.csv",
+        codebook_rows,
+        [
+            "column",
+            "qid",
+            "data_export_tag",
+            "question_type",
+            "question_text",
+            "sub_question_text",
+            "is_open_text",
+            "is_metadata",
+            "is_sensitive",
+            "is_text_entry_suffix",
+            "parent_question_key",
+            "parent_choice_code",
+            "parent_choice_label",
+            "text_reporting_mode",
+            "response_labels",
+        ],
+    )
 
     artifacts = ["survey_metadata.json", "questions_meta.json", "column_map.json", "codebook.csv", "run_manifest.json"]
     if args.privacy_mode == "deidentified":
