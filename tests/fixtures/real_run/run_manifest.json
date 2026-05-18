@@ -1,0 +1,1 @@
+{"survey_id":"SV_FIX","privacy_mode":"deidentified","rows_raw":5,"rows_output":3,"data_file":"responses_clean.csv","columns_contract":["Q1.5","Q1.5_3_TEXT","date","Q_DataPolicyViolations","UnmappedCol"],"artifacts":["responses_clean.csv","column_map.json","codebook.csv","run_manifest.json"]}
