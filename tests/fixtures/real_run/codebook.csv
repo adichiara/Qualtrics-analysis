@@ -1,0 +1,3 @@
+column,qid,data_export_tag,question_type,question_text,sub_question_text,is_open_text,is_metadata,is_sensitive,is_text_entry_suffix,parent_question_key,parent_choice_code,parent_choice_label,text_reporting_mode,response_labels
+Q1.5,QID2,Q1.5,MC,Installation,,False,False,False,False,QID2,,,skip,"{""1"":""Schofield Barracks"",""2"":""Fort Bragg"",""3"":""Other""}"
+Q1.5_3_TEXT,QID2,Q1.5,MC,Installation,Other,True,False,False,True,QID2,3,Other,summarize_later,{}
