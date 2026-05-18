@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 
+SKIP_KEYS = ("is_metadata", "is_sensitive", "is_open_text")
+
+
 def load_csv_rows(path: str | Path) -> list[dict[str, str]]:
     with Path(path).open("r", encoding="utf-8-sig", newline="") as f:
         return list(csv.DictReader(f))
@@ -40,9 +43,15 @@ def _numeric_sort_key(value: str) -> tuple[int, float | str]:
         return (1, value)
 
 
+def _is_analyzable(mapping: dict[str, Any]) -> bool:
+    return not (mapping.get("is_metadata") or mapping.get("is_sensitive") or mapping.get("is_open_text"))
+
+
 def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
     questions: dict[str, dict[str, Any]] = {}
     for m in column_map:
+        if not _is_analyzable(m):
+            continue
         qid = m.get("qid") or m.get("data_export_tag") or m["column"]
         if qid not in questions:
             questions[qid] = {"include": True, "frequency_mode": "auto", "response_order": []}
@@ -67,7 +76,7 @@ def generate_frequency_tables(rows: list[dict[str, str]], column_map: list[dict[
             if strict and _question_looks_like(c):
                 raise SystemExit(f"Unmapped question-like column in strict mode: {c}")
             continue
-        if m.get("is_metadata") or m.get("is_sensitive") or m.get("is_open_text"):
+        if not _is_analyzable(m):
             continue
         qkey = m.get("qid") or m.get("data_export_tag") or c
         grouped[qkey].append(m)
@@ -122,6 +131,29 @@ def generate_frequency_tables(rows: list[dict[str, str]], column_map: list[dict[
     return tables
 
 
+def build_frequency_manifest(rows: list[dict[str, str]], column_map: list[dict[str, Any]], strict: bool, output_files: list[str], data_path: str | Path, column_map_path: str | Path) -> dict[str, Any]:
+    cols = list(rows[0].keys()) if rows else []
+    by_col = {m["column"]: m for m in column_map}
+    skipped_meta = [c for c in cols if c in by_col and by_col[c].get("is_metadata")]
+    skipped_sensitive = [c for c in cols if c in by_col and by_col[c].get("is_sensitive")]
+    skipped_open = [c for c in cols if c in by_col and by_col[c].get("is_open_text")]
+    unmapped = [c for c in cols if c not in by_col]
+    analyzed = [c for c in cols if c in by_col and _is_analyzable(by_col[c])]
+
+    return {
+        "data_path": str(data_path),
+        "column_map_path": str(column_map_path),
+        "total_columns": len(cols),
+        "analyzed_columns": analyzed,
+        "skipped_metadata_columns": skipped_meta,
+        "skipped_sensitive_columns": skipped_sensitive,
+        "skipped_open_text_columns": skipped_open,
+        "unmapped_columns": unmapped,
+        "strict_mode": strict,
+        "output_files": output_files,
+    }
+
+
 def run_frequency_analysis(data_path: str | Path, column_map_path: str | Path, outdir: str | Path, config_path: str | Path, strict: bool = False) -> list[Path]:
     outdir = Path(outdir)
     freq_dir = outdir / "frequency_tables"
@@ -138,6 +170,9 @@ def run_frequency_analysis(data_path: str | Path, column_map_path: str | Path, o
         p = freq_dir / f"{qk}_frequencies.csv"
         write_csv(p, tables[qk], fields)
         outs.append(p)
+
+    manifest = build_frequency_manifest(rows, cmap, strict, [str(p) for p in outs], data_path, column_map_path)
+    (outdir / "frequency_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return outs
 
 

@@ -1,4 +1,4 @@
-from qualtrics_pipeline.export import build_column_map
+from qualtrics_pipeline.export import build_column_map, build_run_manifest
 
 
 def test_build_column_map_multi_answer_mc_binary_labels() -> None:
@@ -33,3 +33,32 @@ def test_build_column_map_matrix_and_metadata() -> None:
     assert q["sub_question_text"] == "Service"
     assert cmap[1]["is_metadata"] is True
     assert cmap[1]["is_sensitive"] is True
+
+
+def test_build_column_map_sbs_placeholder_supported() -> None:
+    meta = {
+        "QID3": {
+            "DataExportTag": "Q3",
+            "QuestionType": "SBS",
+            "Selector": "SBSMatrix",
+            "QuestionText": "SBS prompt",
+        }
+    }
+    cmap = build_column_map("SV_1", ["Q3#1_1"], meta)
+    assert cmap[0]["question_type"] == "SBS"
+    assert cmap[0]["column"] == "Q3#1_1"
+
+
+def test_build_run_manifest_raw_mode_fields() -> None:
+    manifest = build_run_manifest(
+        survey_id="SV_1",
+        privacy_mode="raw",
+        rows_raw=10,
+        rows_output=10,
+        data_file="responses_raw.csv",
+        columns_contract=["Q1"],
+        artifacts=["responses_raw.csv", "run_manifest.json"],
+    )
+    assert manifest["data_file"] == "responses_raw.csv"
+    assert manifest["rows_output"] == 10
+    assert manifest["privacy_mode"] == "raw"

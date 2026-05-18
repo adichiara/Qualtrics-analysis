@@ -35,7 +35,7 @@ Initialize config from column map:
 python -m qualtrics_pipeline.frequencies --column-map runs/example/column_map.json --config qualtrics_frequency_config.json --init-config
 ```
 
-Run frequency analysis:
+Run frequency analysis (deidentified/internal):
 
 ```bash
 python -m qualtrics_pipeline.frequencies \
@@ -44,6 +44,8 @@ python -m qualtrics_pipeline.frequencies \
   --config qualtrics_frequency_config.json \
   --outdir runs/example
 ```
+
+For raw mode, use `responses_raw.csv` with `--data`.
 
 Strict validation mode:
 
@@ -57,3 +59,6 @@ python -m qualtrics_pipeline.frequencies \
 ```
 
 Default frequency behavior skips unmapped, metadata, sensitive, and open-text columns unless config includes them explicitly.
+
+
+Frequency outputs also include `frequency_manifest.json` summarizing analyzed, skipped, and unmapped columns.

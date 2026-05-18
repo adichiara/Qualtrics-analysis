@@ -169,6 +169,20 @@ def build_column_map(survey_id: str, columns: list[str], questions_meta: dict[st
     return out
 
 
+
+
+def build_run_manifest(survey_id: str, privacy_mode: str, rows_raw: int, rows_output: int, data_file: str, columns_contract: list[str], artifacts: list[str]) -> dict[str, Any]:
+    return {
+        "survey_id": survey_id,
+        "exported_at_utc": datetime.now(timezone.utc).isoformat(),
+        "privacy_mode": privacy_mode,
+        "rows_raw": int(rows_raw),
+        "rows_output": int(rows_output),
+        "data_file": data_file,
+        "columns_contract": columns_contract,
+        "artifacts": artifacts,
+    }
+
 def write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
     with path.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -237,15 +251,9 @@ def main() -> None:
     else:
         artifacts = ["responses_raw.csv", *artifacts]
 
-    manifest = {
-        "survey_id": args.survey_id,
-        "exported_at_utc": datetime.now(timezone.utc).isoformat(),
-        "privacy_mode": args.privacy_mode,
-        "rows_raw": int(len(raw_df)),
-        "rows_clean": int(len(clean_df)),
-        "columns_contract": list(source_df.columns),
-        "artifacts": artifacts,
-    }
+    data_file = "responses_raw.csv" if args.privacy_mode == "raw" else "responses_clean.csv"
+    rows_output = int(len(raw_df)) if args.privacy_mode == "raw" else int(len(clean_df))
+    manifest = build_run_manifest(args.survey_id, args.privacy_mode, int(len(raw_df)), rows_output, data_file, list(source_df.columns), artifacts)
     (outdir / "run_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
