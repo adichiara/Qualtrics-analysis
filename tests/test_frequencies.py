@@ -1,58 +1,32 @@
-from qualtrics_pipeline.frequencies import (
-    build_frequency_rows_for_column,
-    build_tag_map,
-    get_column_context,
-)
+from qualtrics_pipeline.frequencies import generate_frequency_tables
 
 
-def test_build_tag_map_groups_same_export_tag() -> None:
-    meta = {
-        "QID1": {"DataExportTag": "Q1", "QuestionType": "MC"},
-        "QID2": {"DataExportTag": "Q1", "QuestionType": "Matrix"},
-        "QID3": {"DataExportTag": "Q2", "QuestionType": "MC"},
-    }
-    tag_map = build_tag_map(meta)
-
-    assert "Q1" in tag_map
-    assert len(tag_map["Q1"]) == 2
-    assert tag_map["Q2"][0][0] == "QID3"
-
-
-def test_get_column_context_matrix_sub_question() -> None:
-    meta = {
-        "QID10": {
-            "DataExportTag": "Q5",
-            "QuestionType": "Matrix",
-            "QuestionText": "Satisfaction",
-            "Choices": {"1": {"Display": "Quality"}},
-            "Answers": {"1": {"Display": "Poor"}, "2": {"Display": "Good"}},
-        }
-    }
-    tag_map = build_tag_map(meta)
-    context = get_column_context("Q5_1", tag_map)
-
-    assert context.qid == "QID10"
-    assert context.item_text == "Quality"
-    assert context.response_labels["2"] == "Good"
-
-
-def test_interval_sort_order_numeric_then_alpha() -> None:
-    context = type("Ctx", (), {
-        "question_type": "Matrix",
-        "base_tag": "Q1",
-        "question_text": "Rate",
-        "item_text": "Item",
-        "column": "Q1_1",
-        "response_labels": {},
-    })()
+def test_single_answer_mc_recode_and_missing_pct() -> None:
+    rows = [{"Q1": "1"}, {"Q1": "2"}, {"Q1": ""}, {"Q1": "2"}]
+    cmap = [{"column": "Q1", "qid": "QID1", "data_export_tag": "Q1", "question_type": "MC", "question_text": "Pick", "sub_question_text": "", "response_labels": {"1": "Yes", "2": "No"}, "is_open_text": False, "is_metadata": False, "is_sensitive": False}]
     config = {"defaults": {"frequency_mode": "auto"}, "questions": {"QID1": {}}}
+    out = generate_frequency_tables(rows, cmap, config)
+    q = out["QID1"]
+    assert q[0]["valid_n"] == 3
+    assert sorted([r["response_label"] for r in q]) == ["No", "Yes"]
 
-    rows = build_frequency_rows_for_column(
-        values=["10", "2", "A", "2"],
-        context=context,
-        question_key="QID1",
-        question_total_n=4,
-        config=config,
-    )
 
-    assert [r["response_code"] for r in rows] == ["2", "10", "A"]
+def test_skip_metadata_open_text_sensitive() -> None:
+    rows = [{"Q2": "1", "RecipientEmail": "a@x.com", "Q3_TEXT": "hello"}]
+    cmap = [
+        {"column": "Q2", "qid": "QID2", "data_export_tag": "Q2", "question_type": "MC", "question_text": "", "sub_question_text": "", "response_labels": {"1": "A"}, "is_open_text": False, "is_metadata": False, "is_sensitive": False},
+        {"column": "RecipientEmail", "qid": "", "data_export_tag": "", "question_type": "", "question_text": "", "sub_question_text": "", "response_labels": {}, "is_open_text": False, "is_metadata": True, "is_sensitive": True},
+        {"column": "Q3_TEXT", "qid": "QID3", "data_export_tag": "Q3", "question_type": "TE", "question_text": "", "sub_question_text": "", "response_labels": {}, "is_open_text": True, "is_metadata": False, "is_sensitive": False},
+    ]
+    out = generate_frequency_tables(rows, cmap, {"defaults": {}, "questions": {}})
+    assert list(out.keys()) == ["QID2"]
+
+
+def test_strict_unmapped_question_like_column_fails() -> None:
+    rows = [{"Q99": "1"}]
+    try:
+        generate_frequency_tables(rows, [], {"defaults": {}, "questions": {}}, strict=True)
+    except SystemExit as e:
+        assert "Unmapped question-like" in str(e)
+    else:
+        raise AssertionError("expected strict mode failure")
