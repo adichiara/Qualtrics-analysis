@@ -11,3 +11,4 @@ analysis_output/
 *.log
 qualtrics_frequency_config.json
 !tests/fixtures/**/*.csv
+!tests/fixtures/**/*.json
