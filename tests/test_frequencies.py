@@ -35,7 +35,7 @@ def _run_sort(rows: list[dict], labels: dict, sort_by: str, **extra_cfg) -> list
             "QSORT": {"include": True, "sort_by": sort_by, "response_order": [], "text_entry_columns": {}, **extra_cfg}
         },
     }
-    tables, _ = generate_frequency_tables(rows, column_map, config)
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
     return [r["response_label"] for r in tables["QSORT"]]
 
 
@@ -126,7 +126,7 @@ def test_multi_select_valid_pct_uses_total_respondents() -> None:
         "defaults": {},
         "questions": {"QID1": {"include": True, "frequency_mode": "auto", "response_order": [], "text_entry_columns": {}}},
     }
-    tables, _ = generate_frequency_tables(rows, column_map, config)
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
     assert "QID1" in tables
 
     by_col = {r["column"]: r for r in tables["QID1"]}
@@ -182,7 +182,7 @@ def test_sort_response_order_explicit() -> None:
             "QSORT": {"include": True, "sort_by": "response_order", "response_order": ["3", "1"], "text_entry_columns": {}}
         },
     }
-    tables, _ = generate_frequency_tables(_SORT_ROWS, column_map, config)
+    tables, _, _ = generate_frequency_tables(_SORT_ROWS, column_map, config)
     labels = [r["response_label"] for r in tables["QSORT"]]
     assert labels == ["C", "A", "B"]
 
@@ -197,7 +197,7 @@ def test_sort_auto_matrix_defaults_to_survey_order() -> None:
         "defaults": {},
         "questions": {"QSORT": {"include": True, "sort_by": "auto", "response_order": [], "text_entry_columns": {}}},
     }
-    tables, _ = generate_frequency_tables(rows, column_map, config)
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
     result = [r["response_label"] for r in tables["QSORT"]]
     assert result == ["Disagree", "Neutral", "Agree"]
 
@@ -211,7 +211,7 @@ def test_sort_legacy_frequency_mode_interval_maps_to_survey_order() -> None:
         "defaults": {},
         "questions": {"QSORT": {"include": True, "frequency_mode": "interval", "response_order": [], "text_entry_columns": {}}},
     }
-    tables, _ = generate_frequency_tables(rows, column_map, config)
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
     result = [r["response_label"] for r in tables["QSORT"]]
     assert result == ["Low", "Mid", "High"]
 
@@ -273,7 +273,7 @@ def test_base_n_reflects_display_logic() -> None:
             "tree": {"type": "pred", "column": "Q_A", "op": "equals", "value": "1"},
         }
     }
-    tables, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
+    tables, _, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
 
     qb = tables["QID_B"]
     assert len(qb) == 1  # one observed response value ("5")
@@ -295,7 +295,7 @@ def test_eligible_n_defaults_to_all_respondents_without_logic() -> None:
     rows = [{"Q": "1"}, {"Q": "2"}, {"Q": ""}]
     column_map = [_mc_col("Q", {"1": "A", "2": "B"})]
     config = {"defaults": {}, "questions": {}}
-    tables, _ = generate_frequency_tables(rows, column_map, config)  # no display_logic
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)  # no display_logic
     for row in tables["QSORT"]:
         assert row["eligible_n"] == 3  # all respondents eligible
         assert row["total_n"] == 3
@@ -329,7 +329,7 @@ def test_percent_base_total_uses_full_sample_for_prevalence() -> None:
                   "tree": {"type": "pred", "column": "Q_A", "op": "equals", "value": "1"}}
     }
     config = {"defaults": {}, "questions": {"QID_B": {"percent_base": "total"}}}
-    tables, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
+    tables, _, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
 
     by_label = {r["response_label"]: r for r in tables["QID_B"]}
     rip = by_label["Rip"]
@@ -356,7 +356,92 @@ def test_report_base_defaults_to_eligible() -> None:
                   "tree": {"type": "pred", "column": "Q_A", "op": "equals", "value": "1"}}
     }
     config = {"defaults": {}, "questions": {}}  # no percent_base -> eligible
-    tables, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
+    tables, _, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
     rip = tables["QID_B"][0]
     assert rip["eligible_n"] == 2      # eligible (those shown), not total 3
     assert rip["report_base"] == "eligible"
+
+
+# ---------------------------------------------------------------------------
+# Grouping / crosstab tests
+# ---------------------------------------------------------------------------
+
+def _grouping_setup():
+    """Q (response A/B) broken out by grouping var G (uniform X/Y)."""
+    rows = [
+        {"Q": "1", "G": "x"},
+        {"Q": "1", "G": "x"},
+        {"Q": "2", "G": "x"},
+        {"Q": "1", "G": "y"},
+        {"Q": "2", "G": "y"},
+        {"Q": "2", "G": ""},   # missing grouping value -> dropped
+    ]
+    column_map = [
+        {**_mc_col("Q", {"1": "A", "2": "B"}), "qid": "QID_Q", "data_export_tag": "QQ"},
+        {**_mc_col("G", {"x": "Uniform X", "y": "Uniform Y"}), "qid": "QID_G", "data_export_tag": "GG"},
+    ]
+    return rows, column_map
+
+
+def test_grouped_table_within_group_counts_and_slug() -> None:
+    rows, column_map = _grouping_setup()
+    config = {"defaults": {}, "questions": {
+        "QID_Q": {"tables": [{"group_by": []}, {"group_by": ["G"]}]}
+    }}
+    tables, _, meta = generate_frequency_tables(rows, column_map, config)
+
+    # Overall table keyed by qkey; grouped table keyed by slug.
+    assert "QID_Q" in tables
+    assert "QID_Q__by__G" in tables
+
+    grouped = tables["QID_Q__by__G"]
+    # Within Uniform X: A=2, B=1 (group size 3). Within Uniform Y: A=1, B=1.
+    x_a = next(r for r in grouped if r["group_codes"] == "x" and r["response_code"] == "1")
+    assert x_a["n"] == 2
+    assert x_a["total_n"] == 3          # group X size (within-group base)
+    assert x_a["total_pct"] == 66.67    # 2/3 within group X
+    assert x_a["group_labels"] == "Uniform X"
+    y_b = next(r for r in grouped if r["group_codes"] == "y" and r["response_code"] == "2")
+    assert y_b["n"] == 1
+    assert y_b["total_n"] == 2
+
+    # The respondent with a missing grouping value is dropped and recorded.
+    assert meta["table_specs"]["QID_Q__by__G"]["dropped_missing"] == 1
+    assert meta["table_specs"]["QID_Q__by__G"]["n_groups"] == 2
+
+
+def test_grouped_table_levels_ordered_by_survey_order() -> None:
+    rows, column_map = _grouping_setup()
+    config = {"defaults": {}, "questions": {"QID_Q": {"tables": [{"group_by": ["G"]}]}}}
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
+    codes_in_order = [r["group_codes"] for r in tables["QID_Q__by__G"]]
+    # Uniform X (label key order) appears before Uniform Y.
+    assert codes_in_order.index("x") < codes_in_order.index("y")
+
+
+def test_grouping_by_missing_variable_warns_and_skips() -> None:
+    rows, column_map = _grouping_setup()
+    config = {"defaults": {}, "questions": {"QID_Q": {"tables": [{"group_by": ["NoSuchCol"]}]}}}
+    tables, _, meta = generate_frequency_tables(rows, column_map, config)
+    assert not any("__by__" in k for k in tables)  # no grouped table produced
+    assert any("not found" in w for w in meta["grouping_warnings"])
+
+
+def test_grouping_by_multiselect_warns_and_skips() -> None:
+    rows = [{"Q": "1", "M_1": "1"}, {"Q": "2", "M_1": ""}]
+    column_map = [
+        {**_mc_col("Q", {"1": "A", "2": "B"}), "qid": "QID_Q"},
+        _make_multi_select_column("M_1", "Opt"),  # selector MAVR
+    ]
+    config = {"defaults": {}, "questions": {"QID_Q": {"tables": [{"group_by": ["M_1"]}]}}}
+    tables, _, meta = generate_frequency_tables(rows, column_map, config)
+    assert not any("__by__" in k for k in tables)
+    assert any("multi-select" in w for w in meta["grouping_warnings"])
+
+
+def test_no_tables_key_defaults_to_overall_only() -> None:
+    rows, column_map = _grouping_setup()
+    config = {"defaults": {}, "questions": {}}
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
+    assert "QID_Q" in tables
+    assert not any("__by__" in k for k in tables)

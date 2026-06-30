@@ -116,3 +116,33 @@ The per-question `percent_base` config value (`valid` / `eligible` / `total`, de
 `report_base` and marked with a star in the HTML report; it does not change the computed
 numbers. Use `total` for prevalence reporting — e.g. the share of *all* respondents who
 reported a durability issue, not just those routed to a follow-up question.
+
+## Grouped tables (crosstabs)
+
+A question can be broken out by one or more grouping variables. Each question in the
+config takes a `tables` list; every entry produces one output table:
+
+```jsonc
+"QID16": {
+  "tables": [
+    { "group_by": [] },          // overall (default when "tables" is omitted)
+    { "group_by": ["Q1.9"] },    // broken out by uniform type
+    { "group_by": ["Q2.4"] }     // also broken out by rank category
+  ]
+}
+```
+
+Each grouped table is the question's distribution computed independently *within* each
+level of the grouping variable, so all three bases (valid/eligible/total) are
+within-group. Grouped output is written to `{qkey}__by__{group}_frequencies.csv` in long
+form (with `group_keys` / `group_codes` / `group_labels` columns); the HTML report pivots
+it into a wide crosstab (response options as rows, group levels as columns, cells showing
+n and the featured percentage).
+
+Notes:
+- Respondents missing the grouping variable's value are excluded from the grouped table;
+  the dropped count is recorded in `frequency_manifest.json` under `grouped_tables`.
+- Grouping variables must be single-answer columns. Multi-select grouping variables (and
+  unknown columns) are skipped with a note in `grouping_warnings`.
+- Multiple grouping variables in one spec (`"group_by": ["Q1.9", "Q2.4"]`) are supported;
+  levels are the observed combinations of values.
