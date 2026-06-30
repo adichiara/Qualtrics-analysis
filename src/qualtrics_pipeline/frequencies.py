@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 SKIP_KEYS = ("is_metadata", "is_sensitive", "is_open_text")
+MULTI_SELECTORS = {"MAVR", "MAHR", "MACOL", "MSB"}
 
 
 def load_csv_rows(path: str | Path) -> list[dict[str, str]]:
@@ -135,6 +136,12 @@ def generate_frequency_tables(rows, column_map, config, strict=False):
             else:
                 ordered = response_order + [k for k, _ in sorted(((k, v) for k, v in counts.items() if k not in response_order), key=lambda kv: (-kv[1], kv[0]))]
             labels = m.get("response_labels", {}) or {}
+            # Multi-select columns store "1" when selected and blank otherwise,
+            # so valid_n would equal n, giving 100% for every option. Use the
+            # question-level total as the denominator instead.
+            is_multi_select = m.get("selector") in MULTI_SELECTORS
+            pct_denom = question_total_n if is_multi_select else len(valid)
+            reported_valid_n = question_total_n if is_multi_select else len(valid)
             for code in ordered:
                 out_rows.append({
                     "question_key": qkey,
@@ -147,8 +154,8 @@ def generate_frequency_tables(rows, column_map, config, strict=False):
                     "response_code": code,
                     "response_label": labels.get(code, code),
                     "n": counts[code],
-                    "valid_pct": round((counts[code] / len(valid)) * 100.0, 2),
-                    "valid_n": len(valid),
+                    "valid_pct": round((counts[code] / pct_denom) * 100.0, 2) if pct_denom else 0.0,
+                    "valid_n": reported_valid_n,
                     "question_total_n": question_total_n,
                 })
         tables[qkey] = out_rows
