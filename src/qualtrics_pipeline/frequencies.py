@@ -321,6 +321,12 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         "output_files": [str(p) for p in outs],
     }
     (outdir / "frequency_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    # Emit an HTML validation report alongside the CSV artifacts.
+    from .report import generate_html_report
+
+    report_path = generate_html_report(outdir)
+    outs.append(report_path)
     return outs
 
 

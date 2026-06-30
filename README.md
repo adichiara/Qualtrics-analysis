@@ -48,6 +48,23 @@ python -m qualtrics_pipeline.frequencies \
 
 For raw mode, use `responses_raw.csv` with `--data`.
 
+Running the frequency stage also writes `report.html` (see below).
+
+## HTML validation report
+
+The frequency stage emits `report.html` in the output directory automatically. It
+renders every question's frequency table into one self-contained HTML page —
+questions in natural survey order, with `n`, `valid_n`, `valid_pct`, and `base_pct`,
+and a badge on questions gated by display logic — so the computed values can be
+checked for accuracy. (The presentation-quality MS Word output is produced
+separately; this report is a validation aid.)
+
+To (re)generate it from an existing run directory:
+
+```bash
+python -m qualtrics_pipeline.report --run-dir runs/example
+```
+
 Strict validation mode:
 
 ```bash
