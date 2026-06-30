@@ -63,6 +63,7 @@ def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
             questions[qid] = {
                 "include": True,
                 "sort_by": "auto",
+                "percent_base": "eligible",
                 "response_order": [],
                 "text_entry_columns": {},
             }
@@ -138,8 +139,8 @@ def _ordered_codes(
     return sorted(all_codes, key=lambda k: (-counts[k], k))
 
 
-def _compute_base_n(rows, qkey, display_logic):
-    """Number of respondents eligible to see a question.
+def _eligible_n(rows, qkey, display_logic):
+    """Respondents eligible to see a question per its display logic.
 
     Uses the question's display-logic tree when it is fully evaluable;
     otherwise every respondent is treated as eligible.
@@ -149,6 +150,20 @@ def _compute_base_n(rows, qkey, display_logic):
         return len(rows)
     tree = entry["tree"]
     return sum(1 for r in rows if evaluate_logic(tree, r))
+
+
+def _compute_base(rows, qkey, display_logic, percent_base):
+    """Resolve the reporting base (denominator) for a question.
+
+    percent_base:
+      "eligible" (default) – respondents shown the question (display logic)
+      "total"              – all survey respondents, for prevalence-style
+                             percentages (e.g. share of everyone who reported
+                             an issue, not just those routed to the follow-up)
+    """
+    if percent_base == "total":
+        return len(rows), "total"
+    return _eligible_n(rows, qkey, display_logic), "eligible"
 
 
 def generate_frequency_tables(rows, column_map, config, strict=False, display_logic=None):
@@ -192,9 +207,9 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
             continue
 
         question_total_n = sum(1 for r in rows if any(not _is_missing(r.get(m["column"])) for m in mappings))
-        # base_n: respondents eligible to see this question per display logic.
-        # For unconditional questions this is the full respondent count.
-        base_n = _compute_base_n(rows, qkey, display_logic)
+        # base_n: the configured reporting denominator for this question.
+        percent_base = cfg.get("percent_base", "eligible")
+        base_n, base_type = _compute_base(rows, qkey, display_logic, percent_base)
         out_rows = []
         for m in mappings:
             vals = [str(r.get(m["column"], "")).strip() for r in rows]
@@ -237,6 +252,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                     "valid_n": reported_valid_n,
                     "base_pct": round((counts[code] / base_n) * 100.0, 2) if base_n else 0.0,
                     "base_n": base_n,
+                    "base_type": base_type,
                     "question_total_n": question_total_n,
                 })
         tables[qkey] = out_rows
@@ -262,7 +278,7 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
 
     tables, text_outputs = generate_frequency_tables(rows, cmap, config, strict=strict, display_logic=display_logic)
 
-    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_pct", "valid_n", "base_pct", "base_n", "question_total_n"]
+    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_pct", "valid_n", "base_pct", "base_n", "base_type", "question_total_n"]
     outs: list[Path] = []
     empty_output_tables: list[str] = []
     for qk in sorted(tables.keys()):
@@ -311,7 +327,7 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         "text_entry_outputs": [str(p) for p in outs if "open_text_outputs" in str(p)],
         "strict_mode": strict,
         "conditional_questions": {
-            qk: _compute_base_n(rows, qk, display_logic)
+            qk: _eligible_n(rows, qk, display_logic)
             for qk, entry in display_logic.items()
             if entry.get("fully_evaluable")
         },

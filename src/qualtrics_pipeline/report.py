@@ -15,6 +15,7 @@ import csv
 import html
 import json
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -71,16 +72,47 @@ nav a { text-decoration: none; }
 a.top { font-size: 0.75rem; color: #888; margin-left: 0.5rem; }
 details { margin: 0.5rem 0; }
 summary { cursor: pointer; font-weight: 600; }
+table.writein { width: auto; max-width: 100%; margin-bottom: 1.5rem; background: #fcfcfd; }
+table.writein th { background: #eef1f4; }
 """
 
 
-def _render_question_section(qkey: str, rows: list[dict[str, str]], conditional: bool) -> str:
+def _render_writein_table(text_rows: list[dict[str, str]]) -> str:
+    """Render write-in / 'Other' responses for a question as a separate table.
+
+    Verbatim responses are aggregated to (response, count) so duplicates
+    collapse, and shown apart from the parent question's choice frequencies.
+    """
+    counts: Counter = Counter()
+    for r in text_rows:
+        value = (r.get("text_response") or "").strip()
+        if value:
+            counts[value] += 1
+    if not counts:
+        return ""
+    body = "".join(
+        f"<tr><td>{_esc(text)}</td><td class=\"num\">{n}</td></tr>"
+        for text, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+    total = sum(counts.values())
+    return (
+        f'<div class="meta">Write-in responses ({total})</div>'
+        '<table class="writein"><thead><tr><th>Write-in response</th>'
+        '<th class="num">n</th></tr></thead>'
+        f"<tbody>{body}</tbody></table>"
+    )
+
+
+def _render_question_section(
+    qkey: str, rows: list[dict[str, str]], conditional: bool, writein_rows: list[dict[str, str]]
+) -> str:
     first = rows[0]
     question_id = first.get("question_id") or qkey
     question_text = first.get("question_text", "")
     qtype = first.get("question_type", "")
     scale = first.get("scale_type", "")
     base_n = first.get("base_n", "")
+    base_type = first.get("base_type", "")
     total = first.get("question_total_n", "")
 
     has_attribute = any((r.get("attribute") or "").strip() for r in rows)
@@ -110,10 +142,12 @@ def _render_question_section(qkey: str, rows: list[dict[str, str]], conditional:
         body.append("<tr>" + "".join(cells) + "</tr>")
 
     badge = '<span class="badge">conditional</span>' if conditional else ""
+    base_label = f" ({_esc(base_type)})" if base_type else ""
     meta = (
         f"Type: {_esc(qtype)} &middot; Scale: {_esc(scale)} &middot; "
-        f"Base n: {_esc(base_n)} &middot; Answered: {_esc(total)}"
+        f"Base n: {_esc(base_n)}{base_label} &middot; Answered: {_esc(total)}"
     )
+    writein = _render_writein_table(writein_rows) if writein_rows else ""
     return (
         f'<section id="{_esc(qkey)}">'
         f'<h2>{_esc(question_id)}{badge}<a class="top" href="#top">top</a><br>'
@@ -121,26 +155,21 @@ def _render_question_section(qkey: str, rows: list[dict[str, str]], conditional:
         f'<div class="meta">{meta}</div>'
         f"<table><thead><tr>{''.join(header_cells)}</tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
+        f"{writein}"
         f"</section>"
     )
 
 
-def _render_open_text(text_dir: Path) -> str:
-    files = sorted(text_dir.glob("*_open_text.csv"))
-    if not files:
-        return ""
-    parts = ["<h2>Open-text responses<a class=\"top\" href=\"#top\">top</a></h2>"]
-    for f in files:
-        rows = load_csv_rows(f)
-        if not rows:
-            continue
-        col = rows[0].get("column", f.stem)
-        items = "".join(f"<li>{_esc(r.get('text_response'))}</li>" for r in rows)
-        parts.append(
-            f"<details><summary>{_esc(col)} ({len(rows)} responses)</summary>"
-            f"<ol>{items}</ol></details>"
-        )
-    return "".join(parts)
+def _load_writeins(text_dir: Path) -> dict[str, list[dict[str, str]]]:
+    """Group open-text / write-in responses by their parent question_key."""
+    grouped: dict[str, list[dict[str, str]]] = {}
+    if not text_dir.is_dir():
+        return grouped
+    for f in sorted(text_dir.glob("*_open_text.csv")):
+        for r in load_csv_rows(f):
+            qkey = r.get("question_key") or f.stem
+            grouped.setdefault(qkey, []).append(r)
+    return grouped
 
 
 def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None) -> Path:
@@ -170,19 +199,29 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         f"&mdash; {_esc((rows[0].get('question_text') or '')[:70])}</li>"
         for _, qkey, rows in blocks
     )
+    writeins = _load_writeins(run_dir / "open_text_outputs")
     sections = "".join(
-        _render_question_section(qkey, rows, qkey in conditional) for _, qkey, rows in blocks
+        _render_question_section(qkey, rows, qkey in conditional, writeins.get(qkey, []))
+        for _, qkey, rows in blocks
     )
-    open_text = _render_open_text(run_dir / "open_text_outputs")
+    # Render any write-ins whose parent question has no frequency table of its own.
+    rendered_qkeys = {qkey for _, qkey, _ in blocks}
+    orphan = "".join(
+        f'<section><h2>{_esc(qkey)} (write-in)<a class="top" href="#top">top</a></h2>'
+        f"{_render_writein_table(rws)}</section>"
+        for qkey, rws in sorted(writeins.items())
+        if qkey not in rendered_qkeys
+    )
 
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
     summary = (
         f'<div class="summary"><strong>{len(blocks)}</strong> question table(s) '
         f"from <code>{_esc(data_path)}</code>.<br>"
         "<span class=\"meta\">Valid % uses respondents who answered the question as the "
-        "denominator; Base % uses respondents eligible to see it (display logic). "
-        "Questions gated by display logic are marked "
-        '<span class="badge">conditional</span>.</span></div>'
+        "denominator; Base % uses the configured reporting base (eligible respondents per "
+        "display logic, or all respondents when percent_base is 'total'). Write-in / 'Other' "
+        "responses are shown in a separate table beneath each question. Questions gated by "
+        'display logic are marked <span class="badge">conditional</span>.</span></div>'
     )
 
     doc = (
@@ -194,7 +233,7 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         f'<div class="meta">Generated {generated}</div>'
         f"{summary}"
         f"<nav><h2>Questions</h2><ol>{index_items}</ol></nav>"
-        f"{sections}{open_text}"
+        f"{sections}{orphan}"
         "</body></html>"
     )
 

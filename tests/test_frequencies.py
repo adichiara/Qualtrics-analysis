@@ -232,6 +232,7 @@ def test_build_default_config_emits_sort_by() -> None:
     cfg = build_default_config(column_map)
     assert cfg["defaults"]["sort_by"] == "auto"
     assert cfg["questions"]["QID1"]["sort_by"] == "auto"
+    assert cfg["questions"]["QID1"]["percent_base"] == "eligible"
     assert "frequency_mode" not in cfg["defaults"]
 
 
@@ -294,3 +295,60 @@ def test_base_n_defaults_to_all_respondents_without_logic() -> None:
     tables, _ = generate_frequency_tables(rows, column_map, config)  # no display_logic
     for row in tables["QSORT"]:
         assert row["base_n"] == 3  # all respondents eligible
+
+
+def test_percent_base_total_uses_full_sample_for_prevalence() -> None:
+    """percent_base='total' reports prevalence over all respondents, even for a
+    conditional question shown only to a subset (durability-issue example)."""
+    # 4 respondents; Q_B (issue type) shown only when Q_A == "1" (had issues).
+    rows = [
+        {"Q_A": "1", "Q_B": "rip"},
+        {"Q_A": "1", "Q_B": "rip"},
+        {"Q_A": "1", "Q_B": "zipper"},
+        {"Q_A": "0", "Q_B": ""},
+    ]
+    column_map = [
+        _mc_col("Q_A", {"0": "No", "1": "Yes"}),
+        {
+            "survey_id": "SV_1", "qid": "QID_B", "data_export_tag": "QID_B",
+            "column": "Q_B", "question_type": "MC", "selector": "SAVR",
+            "question_text": "Which issue?", "sub_question_text": "",
+            "response_labels": {"rip": "Rip", "zipper": "Broken zipper"},
+            "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+            "is_text_entry_suffix": False, "parent_question_key": "QID_B",
+            "parent_choice_code": "", "parent_choice_label": "",
+            "text_reporting_mode": "skip",
+        },
+    ]
+    display_logic = {
+        "QID_B": {"fully_evaluable": True,
+                  "tree": {"type": "pred", "column": "Q_A", "op": "equals", "value": "1"}}
+    }
+    config = {"defaults": {}, "questions": {"QID_B": {"percent_base": "total"}}}
+    tables, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
+
+    by_label = {r["response_label"]: r for r in tables["QID_B"]}
+    rip = by_label["Rip"]
+    assert rip["n"] == 2
+    assert rip["base_n"] == 4          # all respondents, not just the 3 with issues
+    assert rip["base_type"] == "total"
+    assert rip["base_pct"] == 50.0     # 2/4 prevalence across the whole sample
+    assert rip["valid_pct"] == 66.67   # 2/3 of those who answered, unchanged
+
+
+def test_percent_base_eligible_is_default() -> None:
+    rows = [{"Q_A": "1", "Q_B": "rip"}, {"Q_A": "1", "Q_B": "rip"}, {"Q_A": "0", "Q_B": ""}]
+    column_map = [
+        _mc_col("Q_A", {"0": "No", "1": "Yes"}),
+        {**_mc_col("Q_B_dummy", {}), "column": "Q_B", "qid": "QID_B",
+         "response_labels": {"rip": "Rip"}},
+    ]
+    display_logic = {
+        "QID_B": {"fully_evaluable": True,
+                  "tree": {"type": "pred", "column": "Q_A", "op": "equals", "value": "1"}}
+    }
+    config = {"defaults": {}, "questions": {}}  # no percent_base -> eligible
+    tables, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
+    rip = tables["QID_B"][0]
+    assert rip["base_n"] == 2          # eligible (those shown), not total 3
+    assert rip["base_type"] == "eligible"

@@ -79,21 +79,50 @@ def test_generate_report_renders_values_and_conditional_badge(tmp_path) -> None:
     assert "Base n: 42" in html
 
 
-def test_generate_report_includes_open_text(tmp_path) -> None:
+def test_writein_table_rendered_under_parent_question(tmp_path) -> None:
+    """Write-ins for a question render as a separate table inside that section,
+    not folded into the main choice-frequency table."""
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    text_dir = run_dir / "open_text_outputs"
+    freq_dir.mkdir(parents=True)
+    text_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", [
+        _base_row(response_code="3", response_label="Other:", n="25"),
+    ])
+    with (text_dir / "QID2_Q1.5_3_TEXT_open_text.csv").open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["question_key", "column", "text_response"])
+        w.writeheader()
+        # Duplicate "Camp Zama" should collapse to n=2.
+        for val in ["Camp Zama", "Camp Zama", "Fort Hood"]:
+            w.writerow({"question_key": "QID2", "column": "Q1.5_3_TEXT", "text_response": val})
+
+    html = generate_html_report(run_dir).read_text(encoding="utf-8")
+    # Other still a row in the main table
+    assert "Other:" in html
+    # Write-in table present, duplicates aggregated
+    assert "Write-in response" in html
+    assert "Camp Zama" in html
+    assert "Fort Hood" in html
+    # The write-in table lives inside the QID2 section (before the next section / end)
+    section = html.split('id="QID2"')[1]
+    assert "Camp Zama" in section
+
+
+def test_writein_without_parent_table_renders_orphan(tmp_path) -> None:
     run_dir = tmp_path / "run"
     freq_dir = run_dir / "frequency_tables"
     text_dir = run_dir / "open_text_outputs"
     freq_dir.mkdir(parents=True)
     text_dir.mkdir(parents=True)
     _write_freq_csv(freq_dir / "QID2_frequencies.csv", [_base_row()])
-
     with (text_dir / "QID9_Q9_TEXT_open_text.csv").open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["question_key", "column", "text_response"])
         w.writeheader()
         w.writerow({"question_key": "QID9", "column": "Q9_TEXT", "text_response": "Camp Zama"})
 
     html = generate_html_report(run_dir).read_text(encoding="utf-8")
-    assert "Open-text responses" in html
+    assert "QID9 (write-in)" in html
     assert "Camp Zama" in html
 
 
