@@ -152,18 +152,17 @@ def _eligible_n(rows, qkey, display_logic):
     return sum(1 for r in rows if evaluate_logic(tree, r))
 
 
-def _compute_base(rows, qkey, display_logic, percent_base):
-    """Resolve the reporting base (denominator) for a question.
+# The percentage denominators every frequency row carries:
+#   valid    – respondents who answered the question
+#   eligible – respondents shown the question (display logic); == total when
+#              the question has no display logic
+#   total    – all survey respondents (prevalence base)
+# percent_base names which of these the report should feature by default.
+PERCENT_BASES = {"valid", "eligible", "total"}
 
-    percent_base:
-      "eligible" (default) – respondents shown the question (display logic)
-      "total"              – all survey respondents, for prevalence-style
-                             percentages (e.g. share of everyone who reported
-                             an issue, not just those routed to the follow-up)
-    """
-    if percent_base == "total":
-        return len(rows), "total"
-    return _eligible_n(rows, qkey, display_logic), "eligible"
+
+def _pct(numerator: int, denom: int) -> float:
+    return round((numerator / denom) * 100.0, 2) if denom else 0.0
 
 
 def generate_frequency_tables(rows, column_map, config, strict=False, display_logic=None):
@@ -199,6 +198,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
             continue
         grouped[qkey].append(m)
 
+    total_n = len(rows)
     tables = {}
     for qkey, mappings in grouped.items():
         cfg = dict(defaults)
@@ -207,9 +207,11 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
             continue
 
         question_total_n = sum(1 for r in rows if any(not _is_missing(r.get(m["column"])) for m in mappings))
-        # base_n: the configured reporting denominator for this question.
-        percent_base = cfg.get("percent_base", "eligible")
-        base_n, base_type = _compute_base(rows, qkey, display_logic, percent_base)
+        # Compute every base up front; the report selects which to feature.
+        eligible_n = _eligible_n(rows, qkey, display_logic)
+        report_base = cfg.get("percent_base", "eligible")
+        if report_base not in PERCENT_BASES:
+            report_base = "eligible"
         out_rows = []
         for m in mappings:
             vals = [str(r.get(m["column"], "")).strip() for r in rows]
@@ -231,12 +233,12 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
             response_order_cfg = [str(x) for x in (cfg.get("response_order", []) or [])]
             ordered = _ordered_codes(counts, sort_by, response_order_cfg, labels)
             # Multi-select columns store "1" when selected and blank otherwise,
-            # so valid_n would equal n, giving 100% for every option. Use the
-            # question-level total as the denominator instead.
+            # so a per-column non-missing count would equal n (always 100%). Use
+            # the question-level "answered any option" total as the valid base.
             is_multi_select = m.get("selector") in MULTI_SELECTORS
-            pct_denom = question_total_n if is_multi_select else len(valid)
-            reported_valid_n = question_total_n if is_multi_select else len(valid)
+            valid_n = question_total_n if is_multi_select else len(valid)
             for code in ordered:
+                n = counts[code]
                 out_rows.append({
                     "question_key": qkey,
                     "question_id": m.get("data_export_tag", ""),
@@ -247,13 +249,14 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                     "scale_type": scale_type,
                     "response_code": code,
                     "response_label": labels.get(code, code),
-                    "n": counts[code],
-                    "valid_pct": round((counts[code] / pct_denom) * 100.0, 2) if pct_denom else 0.0,
-                    "valid_n": reported_valid_n,
-                    "base_pct": round((counts[code] / base_n) * 100.0, 2) if base_n else 0.0,
-                    "base_n": base_n,
-                    "base_type": base_type,
-                    "question_total_n": question_total_n,
+                    "n": n,
+                    "valid_n": valid_n,
+                    "valid_pct": _pct(n, valid_n),
+                    "eligible_n": eligible_n,
+                    "eligible_pct": _pct(n, eligible_n),
+                    "total_n": total_n,
+                    "total_pct": _pct(n, total_n),
+                    "report_base": report_base,
                 })
         tables[qkey] = out_rows
     return tables, text_outputs
@@ -278,7 +281,7 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
 
     tables, text_outputs = generate_frequency_tables(rows, cmap, config, strict=strict, display_logic=display_logic)
 
-    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_pct", "valid_n", "base_pct", "base_n", "base_type", "question_total_n"]
+    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base"]
     outs: list[Path] = []
     empty_output_tables: list[str] = []
     for qk in sorted(tables.keys()):

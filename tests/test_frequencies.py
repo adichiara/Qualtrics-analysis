@@ -279,22 +279,26 @@ def test_base_n_reflects_display_logic() -> None:
     assert len(qb) == 1  # one observed response value ("5")
     row = qb[0]
     assert row["n"] == 1
-    assert row["valid_n"] == 1       # one respondent actually answered
-    assert row["base_n"] == 2        # two were eligible (shown the question)
+    assert row["valid_n"] == 1        # one respondent actually answered
+    assert row["eligible_n"] == 2     # two were eligible (shown the question)
+    assert row["total_n"] == 4        # four respondents overall
     assert row["valid_pct"] == 100.0  # 1/1
-    assert row["base_pct"] == 50.0    # 1/2
+    assert row["eligible_pct"] == 50.0  # 1/2
+    assert row["total_pct"] == 25.0   # 1/4
 
-    # Unconditional Q_A (keyed under _mc_col's qid "QSORT"): base_n is the full count.
-    assert tables["QSORT"][0]["base_n"] == 4
+    # Unconditional Q_A (keyed under _mc_col's qid "QSORT"): eligible == total count.
+    assert tables["QSORT"][0]["eligible_n"] == 4
+    assert tables["QSORT"][0]["total_n"] == 4
 
 
-def test_base_n_defaults_to_all_respondents_without_logic() -> None:
+def test_eligible_n_defaults_to_all_respondents_without_logic() -> None:
     rows = [{"Q": "1"}, {"Q": "2"}, {"Q": ""}]
     column_map = [_mc_col("Q", {"1": "A", "2": "B"})]
     config = {"defaults": {}, "questions": {}}
     tables, _ = generate_frequency_tables(rows, column_map, config)  # no display_logic
     for row in tables["QSORT"]:
-        assert row["base_n"] == 3  # all respondents eligible
+        assert row["eligible_n"] == 3  # all respondents eligible
+        assert row["total_n"] == 3
 
 
 def test_percent_base_total_uses_full_sample_for_prevalence() -> None:
@@ -330,13 +334,17 @@ def test_percent_base_total_uses_full_sample_for_prevalence() -> None:
     by_label = {r["response_label"]: r for r in tables["QID_B"]}
     rip = by_label["Rip"]
     assert rip["n"] == 2
-    assert rip["base_n"] == 4          # all respondents, not just the 3 with issues
-    assert rip["base_type"] == "total"
-    assert rip["base_pct"] == 50.0     # 2/4 prevalence across the whole sample
-    assert rip["valid_pct"] == 66.67   # 2/3 of those who answered, unchanged
+    # All bases are computed regardless of the configured report_base.
+    assert rip["eligible_n"] == 3      # three were shown the follow-up
+    assert rip["eligible_pct"] == 66.67  # 2/3
+    assert rip["total_n"] == 4         # all respondents
+    assert rip["total_pct"] == 50.0    # 2/4 prevalence across the whole sample
+    assert rip["valid_pct"] == 66.67   # 2/3 of those who answered
+    # percent_base="total" is recorded as the featured reporting base.
+    assert rip["report_base"] == "total"
 
 
-def test_percent_base_eligible_is_default() -> None:
+def test_report_base_defaults_to_eligible() -> None:
     rows = [{"Q_A": "1", "Q_B": "rip"}, {"Q_A": "1", "Q_B": "rip"}, {"Q_A": "0", "Q_B": ""}]
     column_map = [
         _mc_col("Q_A", {"0": "No", "1": "Yes"}),
@@ -350,5 +358,5 @@ def test_percent_base_eligible_is_default() -> None:
     config = {"defaults": {}, "questions": {}}  # no percent_base -> eligible
     tables, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
     rip = tables["QID_B"][0]
-    assert rip["base_n"] == 2          # eligible (those shown), not total 3
-    assert rip["base_type"] == "eligible"
+    assert rip["eligible_n"] == 2      # eligible (those shown), not total 3
+    assert rip["report_base"] == "eligible"
