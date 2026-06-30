@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .survey_logic import build_display_logic_map
+
 SENSITIVE_COLUMNS = {
     "RecipientFirstName",
     "RecipientLastName",
@@ -286,6 +288,9 @@ def main() -> None:
     cmap = build_column_map(args.survey_id, list(source_df.columns), questions_meta)
     (outdir / "column_map.json").write_text(json.dumps(cmap, indent=2), encoding="utf-8")
 
+    display_logic = build_display_logic_map(questions_meta)
+    (outdir / "display_logic.json").write_text(json.dumps(display_logic, indent=2), encoding="utf-8")
+
     codebook_rows = [
         {
             "column": row["column"],
@@ -328,7 +333,7 @@ def main() -> None:
         ],
     )
 
-    artifacts = ["survey_metadata.json", "questions_meta.json", "column_map.json", "codebook.csv", "run_manifest.json"]
+    artifacts = ["survey_metadata.json", "questions_meta.json", "column_map.json", "display_logic.json", "codebook.csv", "run_manifest.json"]
     if args.privacy_mode == "deidentified":
         artifacts.insert(0, "responses_clean.csv")
     elif args.privacy_mode == "internal":
