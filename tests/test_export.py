@@ -1,4 +1,4 @@
-from qualtrics_pipeline.export import build_column_map, build_run_manifest
+from qualtrics_pipeline.export import build_column_map, build_run_manifest, _strip_html
 
 
 def test_build_column_map_multi_answer_mc_binary_labels() -> None:
@@ -62,3 +62,25 @@ def test_build_run_manifest_raw_mode_fields() -> None:
     assert manifest["data_file"] == "responses_raw.csv"
     assert manifest["rows_output"] == 10
     assert manifest["privacy_mode"] == "raw"
+
+
+def test_strip_html_removes_tags_and_unescapes() -> None:
+    assert _strip_html("<div>Hello &amp; welcome</div>") == "Hello & welcome"
+    assert _strip_html("<div></div>Please indicate your sex:") == "Please indicate your sex:"
+    assert _strip_html("Rate it:&nbsp;<br><br>If unsure, ask.") == "Rate it: If unsure, ask."
+    assert _strip_html("No HTML here") == "No HTML here"
+    assert _strip_html("") == ""
+
+
+def test_build_column_map_strips_html_from_question_text() -> None:
+    meta = {
+        "QID1": {
+            "DataExportTag": "Q1",
+            "QuestionType": "MC",
+            "Selector": "SAVR",
+            "QuestionText": "<div>Please indicate your sex:</div>",
+            "Choices": {"1": {"Display": "Male"}, "2": {"Display": "Female"}},
+        }
+    }
+    cmap = build_column_map("SV_1", ["Q1"], meta)
+    assert cmap[0]["question_text"] == "Please indicate your sex:"

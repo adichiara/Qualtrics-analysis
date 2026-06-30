@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,13 @@ METADATA_COLUMNS = {
 }
 
 MULTI_SELECTORS = {"MAVR", "MAHR", "MACOL", "MSB"}
+
+
+def _strip_html(text: str) -> str:
+    """Strip HTML tags and unescape entities, collapsing resulting whitespace."""
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html.unescape(text)
+    return ' '.join(text.split())
 
 
 def _extract_display(node: dict[str, Any]) -> str:
@@ -151,7 +160,7 @@ def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) 
         "question_type": qtype,
         "selector": selector,
         "subselector": subselector,
-        "question_text": q.get("QuestionText", ""),
+        "question_text": _strip_html(q.get("QuestionText", "")),
         "sub_question_text": sub_question_text,
         "response_labels": response_labels,
         "is_open_text": is_open_text,
