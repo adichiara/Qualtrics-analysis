@@ -93,20 +93,26 @@ Each question in the frequency config takes a `sort_by` value controlling row or
 
 The legacy `frequency_mode` field is still honored (`interval` → `survey_order`, `nominal` → `count_desc`).
 
-## Display logic and conditional bases
+## Percentage bases (computed up front)
 
-Questions gated by Qualtrics display logic are only shown to a subset of respondents,
-so their correct denominator is the *eligible base*, not all respondents. The export
-stage parses each question's `DisplayLogic` into data-level predicates and writes
-`display_logic.json`. The frequency stage loads it automatically (a sibling of
-`--column-map`, or pass `--display-logic`) and adds two columns to every frequency table:
+Every frequency-table row carries all three denominators so the report layer can
+present whichever is appropriate without recomputation:
 
-- `base_n` — respondents eligible to see the question (display logic evaluates true);
-  for unconditional questions this is the full respondent count
-- `base_pct` — `n / base_n * 100` (percentage of those shown the question)
+- `valid_n` / `valid_pct` — among respondents who answered the question
+- `eligible_n` / `eligible_pct` — among respondents shown the question per display
+  logic (equals the full sample when the question has no display logic)
+- `total_n` / `total_pct` — among all survey respondents (prevalence base)
 
-The existing `valid_n` / `valid_pct` (percentage of those who actually answered) are
-unchanged. Respondents who were eligible but left the question blank still count toward
-`base_n`. `frequency_manifest.json` lists `conditional_questions` (question → base_n) and
-`logic_not_evaluable` (questions whose logic contained a condition type the parser could
-not resolve; these fall back to treating all respondents as eligible).
+`eligible_n` is derived from Qualtrics display logic: the export stage parses each
+question's `DisplayLogic` into data-level predicates and writes `display_logic.json`,
+which the frequency stage loads automatically (a sibling of `--column-map`, or pass
+`--display-logic`). Respondents who were eligible but left the question blank still
+count toward `eligible_n`. `frequency_manifest.json` lists `conditional_questions`
+(question → eligible count) and `logic_not_evaluable` (questions whose logic contained
+a condition type the parser could not resolve; these treat all respondents as eligible).
+
+The per-question `percent_base` config value (`valid` / `eligible` / `total`, default
+`eligible`) names which base the report should feature. It is recorded in each row as
+`report_base` and marked with a star in the HTML report; it does not change the computed
+numbers. Use `total` for prevalence reporting — e.g. the share of *all* respondents who
+reported a durability issue, not just those routed to a follow-up question.

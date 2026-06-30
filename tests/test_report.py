@@ -7,8 +7,8 @@ from qualtrics_pipeline.report import _natural_question_key, generate_html_repor
 
 def _write_freq_csv(path: Path, rows: list[dict]) -> None:
     fields = ["question_key", "question_id", "question_text", "question_type", "attribute",
-              "column", "scale_type", "response_code", "response_label", "n", "valid_pct",
-              "valid_n", "base_pct", "base_n", "question_total_n"]
+              "column", "scale_type", "response_code", "response_label", "n", "valid_n",
+              "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base"]
     with path.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -19,8 +19,9 @@ def _base_row(**kw) -> dict:
     row = {
         "question_key": "QID2", "question_id": "Q1.5", "question_text": "Installation",
         "question_type": "MC", "attribute": "", "column": "Q1.5", "scale_type": "nominal",
-        "response_code": "1", "response_label": "Schofield", "n": "42", "valid_pct": "41.58",
-        "valid_n": "101", "base_pct": "41.58", "base_n": "101", "question_total_n": "101",
+        "response_code": "1", "response_label": "Schofield", "n": "42", "valid_n": "101",
+        "valid_pct": "41.58", "eligible_n": "101", "eligible_pct": "41.58", "total_n": "101",
+        "total_pct": "41.58", "report_base": "eligible",
     }
     row.update(kw)
     return row
@@ -50,12 +51,13 @@ def test_generate_report_renders_values_and_conditional_badge(tmp_path) -> None:
         _base_row(response_code="1", response_label="Schofield", n="42", valid_pct="41.58"),
         _base_row(response_code="2", response_label="Fort Bragg", n="34", valid_pct="33.66"),
     ])
-    # A conditional question (base_n < total).
+    # A conditional question (eligible_n < total_n).
     _write_freq_csv(freq_dir / "QID3_frequencies.csv", [
         {"question_key": "QID3", "question_id": "Q1.6", "question_text": "Unit", "question_type": "MC",
          "attribute": "", "column": "Q1.6", "scale_type": "nominal", "response_code": "1",
-         "response_label": "DIVARTY", "n": "9", "valid_pct": "21.43", "valid_n": "42",
-         "base_pct": "21.43", "base_n": "42", "question_total_n": "42"},
+         "response_label": "DIVARTY", "n": "9", "valid_n": "42", "valid_pct": "21.43",
+         "eligible_n": "42", "eligible_pct": "21.43", "total_n": "101", "total_pct": "8.91",
+         "report_base": "eligible"},
     ])
     (run_dir / "frequency_manifest.json").write_text(
         json.dumps({"data_path": "responses_clean.csv", "conditional_questions": {"QID3": 42}}),
@@ -74,9 +76,10 @@ def test_generate_report_renders_values_and_conditional_badge(tmp_path) -> None:
     # Two question sections, indexed in survey order (Q1.5 before Q1.6)
     assert html.count("<section id=") == 2
     assert html.index("Q1.5") < html.index("Q1.6")
-    # Conditional badge present for QID3, base_n surfaced
+    # Conditional badge present for QID3, eligible/total bases surfaced
     assert "conditional" in html
-    assert "Base n: 42" in html
+    assert "Eligible n: 42" in html
+    assert "Total n: 101" in html
 
 
 def test_writein_table_rendered_under_parent_question(tmp_path) -> None:

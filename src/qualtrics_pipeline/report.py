@@ -111,11 +111,17 @@ def _render_question_section(
     question_text = first.get("question_text", "")
     qtype = first.get("question_type", "")
     scale = first.get("scale_type", "")
-    base_n = first.get("base_n", "")
-    base_type = first.get("base_type", "")
-    total = first.get("question_total_n", "")
+    eligible_n = first.get("eligible_n", "")
+    total_n = first.get("total_n", "")
+    report_base = first.get("report_base", "")
 
     has_attribute = any((r.get("attribute") or "").strip() for r in rows)
+
+    # Mark the configured reporting base in the header so it is clear which
+    # percentage the final (Word) table would feature.
+    def _pct_header(label: str, base: str) -> str:
+        mark = " &#9733;" if base == report_base else ""
+        return f'<th class="num">{label}{mark}</th>'
 
     header_cells = []
     if has_attribute:
@@ -123,7 +129,9 @@ def _render_question_section(
     header_cells += [
         "<th>Code</th>", "<th>Label</th>",
         '<th class="num">n</th>', '<th class="num">Valid n</th>',
-        '<th class="num">Valid %</th>', '<th class="num">Base %</th>',
+        _pct_header("Valid %", "valid"),
+        _pct_header("Eligible %", "eligible"),
+        _pct_header("Total %", "total"),
     ]
 
     body = []
@@ -137,15 +145,16 @@ def _render_question_section(
             f'<td class="num">{_esc(r.get("n"))}</td>',
             f'<td class="num">{_esc(r.get("valid_n"))}</td>',
             f'<td class="num">{_fmt_pct(r.get("valid_pct", ""))}</td>',
-            f'<td class="num">{_fmt_pct(r.get("base_pct", ""))}</td>',
+            f'<td class="num">{_fmt_pct(r.get("eligible_pct", ""))}</td>',
+            f'<td class="num">{_fmt_pct(r.get("total_pct", ""))}</td>',
         ]
         body.append("<tr>" + "".join(cells) + "</tr>")
 
     badge = '<span class="badge">conditional</span>' if conditional else ""
-    base_label = f" ({_esc(base_type)})" if base_type else ""
+    reported = f" &middot; Reported base: {_esc(report_base)} &#9733;" if report_base else ""
     meta = (
         f"Type: {_esc(qtype)} &middot; Scale: {_esc(scale)} &middot; "
-        f"Base n: {_esc(base_n)}{base_label} &middot; Answered: {_esc(total)}"
+        f"Eligible n: {_esc(eligible_n)} &middot; Total n: {_esc(total_n)}{reported}"
     )
     writein = _render_writein_table(writein_rows) if writein_rows else ""
     return (
@@ -217,11 +226,11 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     summary = (
         f'<div class="summary"><strong>{len(blocks)}</strong> question table(s) '
         f"from <code>{_esc(data_path)}</code>.<br>"
-        "<span class=\"meta\">Valid % uses respondents who answered the question as the "
-        "denominator; Base % uses the configured reporting base (eligible respondents per "
-        "display logic, or all respondents when percent_base is 'total'). Write-in / 'Other' "
-        "responses are shown in a separate table beneath each question. Questions gated by "
-        'display logic are marked <span class="badge">conditional</span>.</span></div>'
+        "<span class=\"meta\">Each row carries three denominators: Valid % (of those who "
+        "answered), Eligible % (of those shown the question per display logic), and Total % "
+        "(of all respondents). The configured reporting base is marked &#9733;. Write-in / "
+        "'Other' responses are shown in a separate table beneath each question. Questions "
+        'gated by display logic are marked <span class="badge">conditional</span>.</span></div>'
     )
 
     doc = (
