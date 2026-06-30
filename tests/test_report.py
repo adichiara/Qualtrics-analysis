@@ -172,3 +172,94 @@ def test_generate_report_escapes_html(tmp_path) -> None:
     html = generate_html_report(run_dir).read_text(encoding="utf-8")
     assert "A &amp; B &lt;script&gt;" in html
     assert "<script>" not in html.split("<style>")[1]  # not injected into body
+
+
+# ---------------------------------------------------------------------------
+# Presentation options
+# ---------------------------------------------------------------------------
+
+def _write_manifest(run_dir: Path, presentation: dict) -> None:
+    (run_dir / "frequency_manifest.json").write_text(
+        json.dumps({"data_path": "x.csv", "table_presentation": presentation}),
+        encoding="utf-8",
+    )
+
+
+def _flat_run(tmp_path, presentation=None):
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", [
+        _base_row(response_code="1", response_label="Schofield", n="42", valid_pct="41.58"),
+        _base_row(response_code="2", response_label="Fort Bragg", n="59", valid_pct="58.42"),
+    ])
+    if presentation is not None:
+        _write_manifest(run_dir, {"QID2": presentation})
+    return run_dir
+
+
+def test_show_code_hidden(tmp_path) -> None:
+    html = generate_html_report(_flat_run(tmp_path, {"show_code": False})).read_text()
+    assert "<th>Code</th>" not in html
+    # default keeps the Code column
+    html2 = generate_html_report(_flat_run(tmp_path / "b")).read_text()
+    assert "<th>Code</th>" in html2
+
+
+def test_stats_percent_only(tmp_path) -> None:
+    html = generate_html_report(
+        _flat_run(tmp_path, {"stats": ["pct"], "show_code": False})
+    ).read_text()
+    # Only one stat column (the featured %); n / Valid n columns absent.
+    assert "<th>Label</th>" in html
+    assert "<th class=\"num\">n</th>" not in html
+    assert "Valid n" not in html
+
+
+def test_response_total_row(tmp_path) -> None:
+    html = generate_html_report(
+        _flat_run(tmp_path, {"response_total": "after", "stats": ["n"]})
+    ).read_text()
+    assert "Total" in html
+    # 42 + 59 = 101 summed in the total row
+    assert "101" in html
+
+
+def _grouped_run(tmp_path, presentation):
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    # overall table (for the Overall column) + grouped table
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", [
+        _base_row(response_code="1", response_label="Schofield", n="13", report_base="total",
+                  total_n="35", total_pct="37.14"),
+        _base_row(response_code="2", response_label="Fort Bragg", n="22", report_base="total",
+                  total_n="35", total_pct="62.86"),
+    ])
+    _write_freq_csv(freq_dir / "QID2__by__Q1.9_frequencies.csv", [
+        _grouped_row("1", "Uniform A", "1", "Schofield", "10", "20", "50.0"),
+        _grouped_row("1", "Uniform A", "2", "Fort Bragg", "10", "20", "50.0"),
+        _grouped_row("2", "Uniform B", "1", "Schofield", "3", "15", "20.0"),
+        _grouped_row("2", "Uniform B", "2", "Fort Bragg", "12", "15", "80.0"),
+    ])
+    _write_manifest(run_dir, {"QID2__by__Q1.9": presentation})
+    return run_dir
+
+
+def test_grouped_overall_column(tmp_path) -> None:
+    html = generate_html_report(
+        _grouped_run(tmp_path, {"overall": "after", "stats": ["n"]})
+    ).read_text()
+    assert "Overall" in html
+    # overall base size n=35 surfaced as a column header
+    assert "n=35" in html
+
+
+def test_grouped_orientation_rows(tmp_path) -> None:
+    html = generate_html_report(
+        _grouped_run(tmp_path, {"orientation": "rows", "stats": ["n"]})
+    ).read_text()
+    # Group axis becomes rows: a "Group" header cell, response options as columns.
+    assert "<th>Group</th>" in html
+    assert "Uniform A" in html and "Uniform B" in html
+    assert "orientation: rows" in html

@@ -160,6 +160,43 @@ def _eligible_n(rows, qkey, display_logic):
 # percent_base names which of these the report should feature by default.
 PERCENT_BASES = {"valid", "eligible", "total"}
 
+# Presentation options consumed by the report layer (not the computation).
+# Resolved per table and stamped into the manifest so the reporting code reads
+# them from the data contract rather than re-parsing the config.
+STAT_KEYS = {
+    "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct",
+    "total_n", "total_pct", "pct", "base_n",
+}
+PRESENTATION_DEFAULTS = {
+    "show_code": True,
+    "orientation": "columns",   # group levels as columns; "rows" transposes
+    "overall": False,           # False | "before" | "after"
+    "response_total": False,    # False | "before" | "after"
+    "stats": None,              # None -> renderer default
+}
+
+
+def _resolve_presentation(cfg: dict, spec: dict) -> dict:
+    """Resolve report presentation options: table spec over question over defaults."""
+    out = dict(PRESENTATION_DEFAULTS)
+    for key in PRESENTATION_DEFAULTS:
+        if key in cfg:
+            out[key] = cfg[key]
+        if key in spec:
+            out[key] = spec[key]
+    if out["orientation"] not in ("columns", "rows"):
+        out["orientation"] = "columns"
+    if out["overall"] not in (False, "before", "after"):
+        out["overall"] = False
+    if out["response_total"] not in (False, "before", "after"):
+        out["response_total"] = False
+    if out["show_code"] not in (True, False):
+        out["show_code"] = True
+    if out["stats"] is not None:
+        cleaned = [s for s in out["stats"] if s in STAT_KEYS]
+        out["stats"] = cleaned or None
+    return out
+
 
 def _pct(numerator: int, denom: int) -> float:
     return round((numerator / denom) * 100.0, 2) if denom else 0.0
@@ -317,12 +354,16 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
             gcols = [str(g) for g in (spec.get("group_by") or [])]
             if not _validate_group_by(qkey, gcols, by_col, warnings):
                 continue
+            presentation = _resolve_presentation(cfg, spec)
 
             if not gcols:
                 tables[qkey] = _build_question_rows(
                     rows, qkey, mappings, cfg, display_logic, dict(_EMPTY_GROUP)
                 )
-                table_meta[qkey] = {"qkey": qkey, "group_by": [], "n_groups": 1, "dropped_missing": 0}
+                table_meta[qkey] = {
+                    "qkey": qkey, "group_by": [], "n_groups": 1,
+                    "dropped_missing": 0, "presentation": presentation,
+                }
                 continue
 
             # Group rows by the (non-missing) tuple of grouping-variable values.
@@ -356,6 +397,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                 "group_by": gcols,
                 "n_groups": len(level_rows),
                 "dropped_missing": dropped,
+                "presentation": presentation,
             }
 
     return tables, text_outputs, {"table_specs": table_meta, "grouping_warnings": warnings}
@@ -439,11 +481,17 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
             qk for qk, entry in display_logic.items() if not entry.get("fully_evaluable")
         ),
         "grouped_tables": [
-            {"table": slug, **meta}
+            {"table": slug, "qkey": meta["qkey"], "group_by": meta["group_by"],
+             "n_groups": meta["n_groups"], "dropped_missing": meta["dropped_missing"]}
             for slug, meta in sorted(report_meta["table_specs"].items())
             if meta["group_by"] and slug in tables and tables[slug]
         ],
         "grouping_warnings": report_meta["grouping_warnings"],
+        "table_presentation": {
+            slug: meta["presentation"]
+            for slug, meta in report_meta["table_specs"].items()
+            if slug in tables and tables[slug]
+        },
         "output_files": [str(p) for p in outs],
     }
     (outdir / "frequency_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
