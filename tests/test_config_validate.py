@@ -95,6 +95,52 @@ def test_invalid_text_reporting_mode_is_error():
     assert any("text_reporting_mode" in m for _w, m in errs)
 
 
+def test_unknown_top_level_key_is_error():
+    config = {"question": {"QID2": {}}}  # typo for "questions"
+    errs = _errors(validate_config(config, _column_map()))
+    assert any("unknown top-level key" in m and "question" in m for _w, m in errs)
+
+
+def test_defaults_get_full_validation():
+    # Defaults are merged into every question, so they need the same checks.
+    config = {"defaults": {"tables": {}, "include": "yes", "percent_base": "nope"}}
+    errs = _errors(validate_config(config, _column_map()))
+    msgs = " ".join(m for w, m in errs if w == "defaults")
+    assert "tables must be a list" in msgs
+    assert "include" in msgs
+    assert "percent_base" in msgs
+
+
+def test_enum_as_list_is_error_not_crash():
+    # Unhashable value must not raise TypeError in the membership check.
+    config = {"questions": {"QID2": {"sort_by": ["auto"]}}}
+    errs = _errors(validate_config(config, _column_map()))
+    assert any("invalid sort_by" in m for _w, m in errs)
+
+
+def test_non_dict_text_spec_is_error_not_crash():
+    config = {"questions": {"QID2": {"text_entry_columns": {"Q1_TEXT": "frequency_text"}}}}
+    errs = _errors(validate_config(config, _column_map()))
+    assert any("must be an object" in m for _w, m in errs)
+
+
+def test_unknown_text_entry_column_is_error():
+    config = {"questions": {"QID2": {
+        "text_entry_columns": {"Q1.5_3_TEX": {"text_reporting_mode": "summarize_later"}}
+    }}}
+    errs = _errors(validate_config(config, _column_map()))
+    assert any("not found in column map" in m for _w, m in errs)
+
+
+def test_stale_question_block_is_advisory_not_fatal():
+    # A question absent from the column map is never applied, so even an
+    # otherwise-fatal error inside it stays advisory.
+    config = {"questions": {"QID_OLD": {"tables": [{"group_by": ["NoCol"]}], "sort_by": "bogus"}}}
+    issues = validate_config(config, _column_map())
+    assert _errors(issues) == []
+    assert any("not found in column map" in m for _w, m in _warnings(issues))
+
+
 def test_run_aborts_on_invalid_config(tmp_path):
     import json
 
