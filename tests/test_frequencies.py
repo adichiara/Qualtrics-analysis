@@ -1,7 +1,42 @@
 import json
 from pathlib import Path
 
-from qualtrics_pipeline.frequencies import build_default_config, generate_frequency_tables, run_frequency_analysis
+from qualtrics_pipeline.frequencies import (
+    build_default_config,
+    generate_frequency_tables,
+    run_frequency_analysis,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by sort-order tests
+# ---------------------------------------------------------------------------
+
+def _mc_col(col: str, labels: dict, question_type: str = "MC") -> dict:
+    """Minimal column-map entry for a single-answer MC column."""
+    return {
+        "survey_id": "SV_1", "qid": "QSORT", "data_export_tag": "QSORT",
+        "column": col, "question_type": question_type, "selector": "SAVR",
+        "question_text": "Q", "sub_question_text": "",
+        "response_labels": labels,
+        "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+        "is_text_entry_suffix": False, "parent_question_key": "QSORT",
+        "parent_choice_code": "", "parent_choice_label": "",
+        "text_reporting_mode": "skip",
+    }
+
+
+def _run_sort(rows: list[dict], labels: dict, sort_by: str, **extra_cfg) -> list[str]:
+    """Return ordered response_label values for a single-column sort test."""
+    column_map = [_mc_col("Q", labels)]
+    config = {
+        "defaults": {},
+        "questions": {
+            "QSORT": {"include": True, "sort_by": sort_by, "response_order": [], "text_entry_columns": {}, **extra_cfg}
+        },
+    }
+    tables, _ = generate_frequency_tables(rows, column_map, config)
+    return [r["response_label"] for r in tables["QSORT"]]
 
 
 def test_real_fixture_frequency_default(tmp_path) -> None:
@@ -107,3 +142,94 @@ def test_multi_select_valid_pct_uses_total_respondents() -> None:
     assert row_b["n"] == 2
     assert row_b["valid_n"] == 3
     assert row_b["valid_pct"] == 66.67
+
+
+# ---------------------------------------------------------------------------
+# Sort-order tests
+# ---------------------------------------------------------------------------
+
+# Shared fixture: C appears 3×, A appears 2×, B appears 1×.
+# survey_order (label key order): A, B, C
+# count_desc: C, A, B
+# count_asc:  B, A, C
+_SORT_ROWS = [
+    {"Q": "1"}, {"Q": "1"}, {"Q": "3"},
+    {"Q": "3"}, {"Q": "3"}, {"Q": "2"},
+]
+# response_labels in survey insertion order: 1→A, 2→B, 3→C
+_SORT_LABELS = {"1": "A", "2": "B", "3": "C"}
+
+
+def test_sort_count_desc() -> None:
+    assert _run_sort(_SORT_ROWS, _SORT_LABELS, "count_desc") == ["C", "A", "B"]
+
+
+def test_sort_count_asc() -> None:
+    assert _run_sort(_SORT_ROWS, _SORT_LABELS, "count_asc") == ["B", "A", "C"]
+
+
+def test_sort_survey_order() -> None:
+    # Follows response_labels key order regardless of counts.
+    assert _run_sort(_SORT_ROWS, _SORT_LABELS, "survey_order") == ["A", "B", "C"]
+
+
+def test_sort_response_order_explicit() -> None:
+    # Explicit list [3, 1] → C first, then A; B (unlisted) appended by count_desc.
+    column_map = [_mc_col("Q", _SORT_LABELS)]
+    config = {
+        "defaults": {},
+        "questions": {
+            "QSORT": {"include": True, "sort_by": "response_order", "response_order": ["3", "1"], "text_entry_columns": {}}
+        },
+    }
+    tables, _ = generate_frequency_tables(_SORT_ROWS, column_map, config)
+    labels = [r["response_label"] for r in tables["QSORT"]]
+    assert labels == ["C", "A", "B"]
+
+
+def test_sort_auto_matrix_defaults_to_survey_order() -> None:
+    # Matrix questions in auto mode should use survey_order, not count_desc.
+    # Labels in order: 1→Disagree, 2→Neutral, 3→Agree — all equally frequent.
+    rows = [{"Q": "3"}, {"Q": "1"}, {"Q": "2"}]
+    labels = {"1": "Disagree", "2": "Neutral", "3": "Agree"}
+    column_map = [_mc_col("Q", labels, question_type="Matrix")]
+    config = {
+        "defaults": {},
+        "questions": {"QSORT": {"include": True, "sort_by": "auto", "response_order": [], "text_entry_columns": {}}},
+    }
+    tables, _ = generate_frequency_tables(rows, column_map, config)
+    result = [r["response_label"] for r in tables["QSORT"]]
+    assert result == ["Disagree", "Neutral", "Agree"]
+
+
+def test_sort_legacy_frequency_mode_interval_maps_to_survey_order() -> None:
+    # Old configs with frequency_mode: interval should behave like survey_order.
+    rows = [{"Q": "3"}, {"Q": "1"}, {"Q": "2"}]
+    labels = {"1": "Low", "2": "Mid", "3": "High"}
+    column_map = [_mc_col("Q", labels)]
+    config = {
+        "defaults": {},
+        "questions": {"QSORT": {"include": True, "frequency_mode": "interval", "response_order": [], "text_entry_columns": {}}},
+    }
+    tables, _ = generate_frequency_tables(rows, column_map, config)
+    result = [r["response_label"] for r in tables["QSORT"]]
+    assert result == ["Low", "Mid", "High"]
+
+
+def test_build_default_config_emits_sort_by() -> None:
+    column_map = [
+        {
+            "survey_id": "SV_1", "qid": "QID1", "data_export_tag": "Q1",
+            "column": "Q1", "question_type": "MC", "selector": "SAVR",
+            "question_text": "Q", "sub_question_text": "",
+            "response_labels": {"1": "Yes", "2": "No"},
+            "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+            "is_text_entry_suffix": False, "parent_question_key": "QID1",
+            "parent_choice_code": "", "parent_choice_label": "",
+            "text_reporting_mode": "skip",
+        }
+    ]
+    cfg = build_default_config(column_map)
+    assert cfg["defaults"]["sort_by"] == "auto"
+    assert cfg["questions"]["QID1"]["sort_by"] == "auto"
+    assert "frequency_mode" not in cfg["defaults"]

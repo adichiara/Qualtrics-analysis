@@ -60,7 +60,7 @@ def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
         if qid not in questions:
             questions[qid] = {
                 "include": True,
-                "frequency_mode": "auto",
+                "sort_by": "auto",
                 "response_order": [],
                 "text_entry_columns": {},
             }
@@ -68,7 +68,7 @@ def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
             questions[qid]["text_entry_columns"][m["column"]] = {
                 "text_reporting_mode": m.get("text_reporting_mode", "summarize_later")
             }
-    return {"defaults": {"frequency_mode": "auto"}, "questions": questions}
+    return {"defaults": {"sort_by": "auto"}, "questions": questions}
 
 
 def _question_looks_like(column: str) -> bool:
@@ -78,6 +78,62 @@ def _question_looks_like(column: str) -> bool:
 def _text_mode_for(mapping: dict[str, Any], question_cfg: dict[str, Any]) -> str:
     per_col = (question_cfg.get("text_entry_columns") or {}).get(mapping["column"], {})
     return per_col.get("text_reporting_mode", mapping.get("text_reporting_mode", "skip"))
+
+
+# Valid sort_by values and what they mean:
+#   survey_order  – follow the key order of response_labels (survey designer's order)
+#   count_desc    – most frequent first (default for nominal questions)
+#   count_asc     – least frequent first
+#   response_order – use the explicit response_order list from config
+SORT_BY_VALUES = {"survey_order", "count_desc", "count_asc", "response_order"}
+
+
+def _effective_sort_by(cfg: dict[str, Any], question_type: str) -> str:
+    """Resolve the sort_by mode from config, with legacy frequency_mode fallback."""
+    sort_by = cfg.get("sort_by")
+    if sort_by and sort_by in SORT_BY_VALUES:
+        return sort_by
+    # Legacy frequency_mode support
+    mode = cfg.get("frequency_mode", "auto")
+    if mode == "interval":
+        return "survey_order"
+    if mode == "nominal":
+        return "count_desc"
+    # auto: Matrix (Likert-type) defaults to survey_order, everything else count_desc
+    return "survey_order" if question_type == "Matrix" else "count_desc"
+
+
+def _ordered_codes(
+    counts: Counter,
+    sort_by: str,
+    response_order_cfg: list[str],
+    response_labels: dict[str, str],
+) -> list[str]:
+    """Return response codes in the requested display order."""
+    all_codes = set(counts.keys())
+
+    if sort_by == "response_order":
+        explicit = [c for c in response_order_cfg if c in all_codes]
+        remainder = sorted(
+            [c for c in all_codes if c not in set(explicit)],
+            key=lambda k: (-counts[k], k),
+        )
+        return explicit + remainder
+
+    if sort_by == "survey_order":
+        # Preserve the insertion order of response_labels (Qualtrics survey order).
+        in_order = [c for c in response_labels if c in all_codes]
+        remainder = sorted(
+            [c for c in all_codes if c not in set(response_labels)],
+            key=_numeric_sort_key,
+        )
+        return in_order + remainder
+
+    if sort_by == "count_asc":
+        return sorted(all_codes, key=lambda k: (counts[k], k))
+
+    # count_desc
+    return sorted(all_codes, key=lambda k: (-counts[k], k))
 
 
 def generate_frequency_tables(rows, column_map, config, strict=False):
@@ -128,14 +184,19 @@ def generate_frequency_tables(rows, column_map, config, strict=False):
             if not valid:
                 continue
             counts = Counter(valid)
+            question_type = m.get("question_type", "")
+            # scale_type is a semantic descriptor of the measurement scale.
+            # interval: ordered/numeric (Matrix Likert, NPS); nominal: categorical.
             mode = cfg.get("frequency_mode", "auto")
-            scale_type = "interval" if (mode == "interval" or (mode == "auto" and m.get("question_type") == "Matrix")) else "nominal"
-            response_order = [str(x) for x in (cfg.get("response_order", []) or []) if str(x) in counts]
-            if scale_type == "interval":
-                ordered = response_order + sorted([x for x in counts if x not in response_order], key=_numeric_sort_key)
-            else:
-                ordered = response_order + [k for k, _ in sorted(((k, v) for k, v in counts.items() if k not in response_order), key=lambda kv: (-kv[1], kv[0]))]
+            scale_type = (
+                "interval"
+                if (mode == "interval" or (mode == "auto" and question_type in {"Matrix", "NPS"}))
+                else "nominal"
+            )
             labels = m.get("response_labels", {}) or {}
+            sort_by = _effective_sort_by(cfg, question_type)
+            response_order_cfg = [str(x) for x in (cfg.get("response_order", []) or [])]
+            ordered = _ordered_codes(counts, sort_by, response_order_cfg, labels)
             # Multi-select columns store "1" when selected and blank otherwise,
             # so valid_n would equal n, giving 100% for every option. Use the
             # question-level total as the denominator instead.
