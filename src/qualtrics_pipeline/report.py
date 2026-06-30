@@ -169,6 +169,85 @@ def _render_question_section(
     )
 
 
+_PCT_FIELD = {"valid": "valid_pct", "eligible": "eligible_pct", "total": "total_pct"}
+_N_FIELD = {"valid": "valid_n", "eligible": "eligible_n", "total": "total_n"}
+
+
+def _render_grouped_section(slug: str, rows: list[dict[str, str]], conditional: bool) -> str:
+    """Pivot a long grouped frequency table into a wide crosstab.
+
+    Rows are response options; columns are the levels of the grouping
+    variable(s). Each cell shows n and the configured report_base percentage
+    (within-group). Group column headers show that group's base size.
+    """
+    first = rows[0]
+    question_id = first.get("question_id") or slug
+    question_text = first.get("question_text", "")
+    report_base = first.get("report_base", "eligible")
+    group_keys = first.get("group_keys", "")
+    pct_field = _PCT_FIELD.get(report_base, "eligible_pct")
+    n_field = _N_FIELD.get(report_base, "eligible_n")
+
+    # Group levels (columns) in the order they appear; carry each group's base n.
+    levels: list[tuple[str, str, str]] = []
+    seen_levels: set[str] = set()
+    for r in rows:
+        gc = r.get("group_codes", "")
+        if gc not in seen_levels:
+            seen_levels.add(gc)
+            levels.append((gc, r.get("group_labels", ""), r.get(n_field, "")))
+
+    # Response options (rows) in first-seen order; identity is (attribute, code).
+    opts: list[tuple[tuple[str, str], dict[str, str]]] = []
+    seen_opts: set[tuple[str, str]] = set()
+    for r in rows:
+        key = (r.get("attribute", ""), r.get("response_code", ""))
+        if key not in seen_opts:
+            seen_opts.add(key)
+            opts.append((key, r))
+
+    cell = {
+        (r.get("group_codes", ""), r.get("attribute", ""), r.get("response_code", "")): r
+        for r in rows
+    }
+    has_attr = any(attr for (attr, _), _ in opts)
+
+    head = ("<th>Attribute</th><th>Response</th>" if has_attr else "<th>Response</th>")
+    for _gc, glabel, gn in levels:
+        head += f'<th class="num">{_esc(glabel)}<br><span class="meta">n={_esc(gn)}</span></th>'
+
+    body = []
+    for (attr, code), rr in opts:
+        cells = f"<td>{_esc(attr)}</td>" if has_attr else ""
+        cells += f"<td>{_esc(rr.get('response_label'))}</td>"
+        for gc, _glabel, _gn in levels:
+            c = cell.get((gc, attr, code))
+            if c is None:
+                cells += '<td class="num">&mdash;</td>'
+            else:
+                cells += (
+                    f'<td class="num">{_esc(c.get("n"))}'
+                    f'<br><span class="meta">{_fmt_pct(c.get(pct_field, ""))}</span></td>'
+                )
+        body.append(f"<tr>{cells}</tr>")
+
+    badge = '<span class="badge">conditional</span>' if conditional else ""
+    meta = (
+        f"Grouped by {_esc(group_keys)} &middot; cells show n and {_esc(report_base)} % "
+        "&#9733; (within group)"
+    )
+    return (
+        f'<section id="{_esc(slug)}">'
+        f'<h2>{_esc(question_id)} &mdash; by {_esc(group_keys)}{badge}'
+        f'<a class="top" href="#top">top</a><br>'
+        f'<span class="qtext">{_esc(question_text)}</span></h2>'
+        f'<div class="meta">{meta}</div>'
+        f'<table class="crosstab"><thead><tr>{head}</tr></thead>'
+        f"<tbody>{''.join(body)}</tbody></table>"
+        f"</section>"
+    )
+
+
 def _load_writeins(text_dir: Path) -> dict[str, list[dict[str, str]]]:
     """Group open-text / write-in responses by their parent question_key."""
     grouped: dict[str, list[dict[str, str]]] = {}
@@ -193,28 +272,39 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     conditional = set((manifest.get("conditional_questions") or {}).keys())
     data_path = manifest.get("data_path", "(unknown)")
 
-    blocks: list[tuple[tuple, str, list[dict[str, str]]]] = []
+    blocks: list[tuple[tuple, str, str, bool, list[dict[str, str]]]] = []
     for csv_path in freq_dir.glob("*_frequencies.csv"):
         rows = load_csv_rows(csv_path)
         if not rows:
             continue
-        qkey = rows[0].get("question_key") or csv_path.stem.replace("_frequencies", "")
-        sort_key = _natural_question_key(rows[0].get("question_id", ""), qkey)
-        blocks.append((sort_key, qkey, rows))
+        stem = csv_path.stem
+        slug = stem[: -len("_frequencies")] if stem.endswith("_frequencies") else stem
+        qkey = rows[0].get("question_key") or slug
+        is_grouped = bool((rows[0].get("group_keys") or "").strip())
+        # Tiebreak by slug so the overall table sorts before its grouped variants.
+        sort_key = _natural_question_key(rows[0].get("question_id", ""), slug)
+        blocks.append((sort_key, slug, qkey, is_grouped, rows))
     blocks.sort(key=lambda b: b[0])
 
+    def _index_label(rows: list[dict[str, str]]) -> str:
+        qid = rows[0].get("question_id") or ""
+        gk = (rows[0].get("group_keys") or "").strip()
+        return f"{qid} — by {gk}" if gk else qid
+
     index_items = "".join(
-        f'<li><a href="#{_esc(qkey)}">{_esc(rows[0].get("question_id") or qkey)}</a> '
-        f"&mdash; {_esc((rows[0].get('question_text') or '')[:70])}</li>"
-        for _, qkey, rows in blocks
+        f'<li><a href="#{_esc(slug)}">{_esc(_index_label(rows))}</a> '
+        f"&mdash; {_esc((rows[0].get('question_text') or '')[:60])}</li>"
+        for _, slug, _qkey, _ig, rows in blocks
     )
     writeins = _load_writeins(run_dir / "open_text_outputs")
     sections = "".join(
-        _render_question_section(qkey, rows, qkey in conditional, writeins.get(qkey, []))
-        for _, qkey, rows in blocks
+        _render_grouped_section(slug, rows, qkey in conditional)
+        if is_grouped
+        else _render_question_section(qkey, rows, qkey in conditional, writeins.get(qkey, []))
+        for _, slug, qkey, is_grouped, rows in blocks
     )
     # Render any write-ins whose parent question has no frequency table of its own.
-    rendered_qkeys = {qkey for _, qkey, _ in blocks}
+    rendered_qkeys = {qkey for _, _slug, qkey, _ig, _rows in blocks}
     orphan = "".join(
         f'<section><h2>{_esc(qkey)} (write-in)<a class="top" href="#top">top</a></h2>'
         f"{_render_writein_table(rws)}</section>"
@@ -229,8 +319,10 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         "<span class=\"meta\">Each row carries three denominators: Valid % (of those who "
         "answered), Eligible % (of those shown the question per display logic), and Total % "
         "(of all respondents). The configured reporting base is marked &#9733;. Write-in / "
-        "'Other' responses are shown in a separate table beneath each question. Questions "
-        'gated by display logic are marked <span class="badge">conditional</span>.</span></div>'
+        "'Other' responses are shown in a separate table beneath each question. Grouped "
+        "tables (crosstabs) show cells as n and the featured % within each group column. "
+        'Questions gated by display logic are marked <span class="badge">conditional</span>.'
+        "</span></div>"
     )
 
     doc = (

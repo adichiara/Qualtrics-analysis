@@ -8,9 +8,10 @@ from qualtrics_pipeline.report import _natural_question_key, generate_html_repor
 def _write_freq_csv(path: Path, rows: list[dict]) -> None:
     fields = ["question_key", "question_id", "question_text", "question_type", "attribute",
               "column", "scale_type", "response_code", "response_label", "n", "valid_n",
-              "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base"]
+              "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base",
+              "group_keys", "group_codes", "group_labels"]
     with path.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
+        w = csv.DictWriter(f, fieldnames=fields, restval="")
         w.writeheader()
         w.writerows(rows)
 
@@ -22,9 +23,19 @@ def _base_row(**kw) -> dict:
         "response_code": "1", "response_label": "Schofield", "n": "42", "valid_n": "101",
         "valid_pct": "41.58", "eligible_n": "101", "eligible_pct": "41.58", "total_n": "101",
         "total_pct": "41.58", "report_base": "eligible",
+        "group_keys": "", "group_codes": "", "group_labels": "",
     }
     row.update(kw)
     return row
+
+
+def _grouped_row(group_code, group_label, response_code, response_label, n, total_n, total_pct, **kw) -> dict:
+    return _base_row(
+        question_key="QID2", question_id="Q1.5", column="Q1.5",
+        response_code=response_code, response_label=response_label, n=n,
+        total_n=total_n, total_pct=total_pct, report_base="total",
+        group_keys="Q1.9", group_codes=group_code, group_labels=group_label, **kw,
+    )
 
 
 def test_natural_question_order() -> None:
@@ -127,6 +138,28 @@ def test_writein_without_parent_table_renders_orphan(tmp_path) -> None:
     html = generate_html_report(run_dir).read_text(encoding="utf-8")
     assert "QID9 (write-in)" in html
     assert "Camp Zama" in html
+
+
+def test_grouped_table_renders_as_crosstab(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    # Q1.5 broken out by Q1.9 (uniform): two group levels, two response options.
+    _write_freq_csv(freq_dir / "QID2__by__Q1.9_frequencies.csv", [
+        _grouped_row("1", "Uniform A", "1", "Schofield", "10", "20", "50.0"),
+        _grouped_row("1", "Uniform A", "2", "Fort Bragg", "10", "20", "50.0"),
+        _grouped_row("2", "Uniform B", "1", "Schofield", "3", "15", "20.0"),
+        _grouped_row("2", "Uniform B", "2", "Fort Bragg", "12", "15", "80.0"),
+    ])
+    html = generate_html_report(run_dir).read_text(encoding="utf-8")
+    # Crosstab section present with group columns and within-group base sizes.
+    assert "by Q1.9" in html
+    assert "Uniform A" in html and "Uniform B" in html
+    assert "crosstab" in html
+    assert "n=20" in html and "n=15" in html        # per-group base in header
+    assert "80.00%" in html                           # within-group cell pct (12/15)
+    # Response options appear as rows.
+    assert "Schofield" in html and "Fort Bragg" in html
 
 
 def test_generate_report_escapes_html(tmp_path) -> None:

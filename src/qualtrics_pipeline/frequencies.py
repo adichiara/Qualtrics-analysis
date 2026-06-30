@@ -165,9 +165,113 @@ def _pct(numerator: int, denom: int) -> float:
     return round((numerator / denom) * 100.0, 2) if denom else 0.0
 
 
+# Empty group columns for ungrouped (overall) tables.
+_EMPTY_GROUP = {"group_keys": "", "group_codes": "", "group_labels": ""}
+
+
+def _group_level_sort_key(codes, gcols, by_col):
+    """Order group levels by each grouping column's survey (label) order."""
+    key = []
+    for gc, code in zip(gcols, codes):
+        label_keys = list((by_col.get(gc, {}).get("response_labels") or {}).keys())
+        idx = label_keys.index(code) if code in label_keys else len(label_keys)
+        key.append((idx, _numeric_sort_key(code)))
+    return key
+
+
+def _build_question_rows(subset, qkey, mappings, cfg, display_logic, group_cols):
+    """Frequency rows for a question computed over a subset of respondents.
+
+    All three bases (valid/eligible/total) are computed within ``subset`` so
+    grouped tables report within-group percentages. ``group_cols`` carries the
+    group_keys/group_codes/group_labels stamped onto every emitted row.
+    """
+    total_n = len(subset)
+    question_total_n = sum(
+        1 for r in subset if any(not _is_missing(r.get(m["column"])) for m in mappings)
+    )
+    eligible_n = _eligible_n(subset, qkey, display_logic)
+    report_base = cfg.get("percent_base", "eligible")
+    if report_base not in PERCENT_BASES:
+        report_base = "eligible"
+
+    out_rows = []
+    for m in mappings:
+        vals = [str(r.get(m["column"], "")).strip() for r in subset]
+        valid = [v for v in vals if not _is_missing(v)]
+        if not valid:
+            continue
+        counts = Counter(valid)
+        question_type = m.get("question_type", "")
+        # scale_type is a semantic descriptor of the measurement scale.
+        # interval: ordered/numeric (Matrix Likert, NPS); nominal: categorical.
+        mode = cfg.get("frequency_mode", "auto")
+        scale_type = (
+            "interval"
+            if (mode == "interval" or (mode == "auto" and question_type in {"Matrix", "NPS"}))
+            else "nominal"
+        )
+        labels = m.get("response_labels", {}) or {}
+        sort_by = _effective_sort_by(cfg, question_type)
+        response_order_cfg = [str(x) for x in (cfg.get("response_order", []) or [])]
+        ordered = _ordered_codes(counts, sort_by, response_order_cfg, labels)
+        # Multi-select columns store "1" when selected and blank otherwise,
+        # so a per-column non-missing count would equal n (always 100%). Use
+        # the question-level "answered any option" total as the valid base.
+        is_multi_select = m.get("selector") in MULTI_SELECTORS
+        valid_n = question_total_n if is_multi_select else len(valid)
+        for code in ordered:
+            n = counts[code]
+            row = {
+                "question_key": qkey,
+                "question_id": m.get("data_export_tag", ""),
+                "question_text": m.get("question_text", ""),
+                "question_type": m.get("question_type", ""),
+                "attribute": m.get("sub_question_text", ""),
+                "column": m["column"],
+                "scale_type": scale_type,
+                "response_code": code,
+                "response_label": labels.get(code, code),
+                "n": n,
+                "valid_n": valid_n,
+                "valid_pct": _pct(n, valid_n),
+                "eligible_n": eligible_n,
+                "eligible_pct": _pct(n, eligible_n),
+                "total_n": total_n,
+                "total_pct": _pct(n, total_n),
+                "report_base": report_base,
+            }
+            row.update(group_cols)
+            out_rows.append(row)
+    return out_rows
+
+
+def _table_specs(cfg):
+    """Per-question list of table specs; defaults to a single overall table."""
+    specs = cfg.get("tables")
+    if not specs:
+        return [{"group_by": []}]
+    return specs
+
+
+def _validate_group_by(qkey, gcols, by_col, warnings):
+    """Return True if every grouping column is a usable single-answer column."""
+    for gc in gcols:
+        gm = by_col.get(gc)
+        if gm is None:
+            warnings.append(f"{qkey}: grouping variable '{gc}' not found; table skipped")
+            return False
+        if gm.get("selector") in MULTI_SELECTORS:
+            warnings.append(
+                f"{qkey}: multi-select grouping variable '{gc}' not supported; table skipped"
+            )
+            return False
+    return True
+
+
 def generate_frequency_tables(rows, column_map, config, strict=False, display_logic=None):
     if not rows:
-        return {}, {}
+        return {}, {}, {"table_specs": {}, "grouping_warnings": []}
 
     by_col = {m["column"]: m for m in column_map}
     all_cols = list(rows[0].keys())
@@ -198,68 +302,63 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
             continue
         grouped[qkey].append(m)
 
-    total_n = len(rows)
-    tables = {}
+    display_logic = display_logic or {}
+    tables: dict[str, list[dict[str, Any]]] = {}
+    table_meta: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+
     for qkey, mappings in grouped.items():
         cfg = dict(defaults)
         cfg.update(qcfgs.get(qkey, {}))
         if cfg.get("include", True) is False:
             continue
 
-        question_total_n = sum(1 for r in rows if any(not _is_missing(r.get(m["column"])) for m in mappings))
-        # Compute every base up front; the report selects which to feature.
-        eligible_n = _eligible_n(rows, qkey, display_logic)
-        report_base = cfg.get("percent_base", "eligible")
-        if report_base not in PERCENT_BASES:
-            report_base = "eligible"
-        out_rows = []
-        for m in mappings:
-            vals = [str(r.get(m["column"], "")).strip() for r in rows]
-            valid = [v for v in vals if not _is_missing(v)]
-            if not valid:
+        for spec in _table_specs(cfg):
+            gcols = [str(g) for g in (spec.get("group_by") or [])]
+            if not _validate_group_by(qkey, gcols, by_col, warnings):
                 continue
-            counts = Counter(valid)
-            question_type = m.get("question_type", "")
-            # scale_type is a semantic descriptor of the measurement scale.
-            # interval: ordered/numeric (Matrix Likert, NPS); nominal: categorical.
-            mode = cfg.get("frequency_mode", "auto")
-            scale_type = (
-                "interval"
-                if (mode == "interval" or (mode == "auto" and question_type in {"Matrix", "NPS"}))
-                else "nominal"
-            )
-            labels = m.get("response_labels", {}) or {}
-            sort_by = _effective_sort_by(cfg, question_type)
-            response_order_cfg = [str(x) for x in (cfg.get("response_order", []) or [])]
-            ordered = _ordered_codes(counts, sort_by, response_order_cfg, labels)
-            # Multi-select columns store "1" when selected and blank otherwise,
-            # so a per-column non-missing count would equal n (always 100%). Use
-            # the question-level "answered any option" total as the valid base.
-            is_multi_select = m.get("selector") in MULTI_SELECTORS
-            valid_n = question_total_n if is_multi_select else len(valid)
-            for code in ordered:
-                n = counts[code]
-                out_rows.append({
-                    "question_key": qkey,
-                    "question_id": m.get("data_export_tag", ""),
-                    "question_text": m.get("question_text", ""),
-                    "question_type": m.get("question_type", ""),
-                    "attribute": m.get("sub_question_text", ""),
-                    "column": m["column"],
-                    "scale_type": scale_type,
-                    "response_code": code,
-                    "response_label": labels.get(code, code),
-                    "n": n,
-                    "valid_n": valid_n,
-                    "valid_pct": _pct(n, valid_n),
-                    "eligible_n": eligible_n,
-                    "eligible_pct": _pct(n, eligible_n),
-                    "total_n": total_n,
-                    "total_pct": _pct(n, total_n),
-                    "report_base": report_base,
-                })
-        tables[qkey] = out_rows
-    return tables, text_outputs
+
+            if not gcols:
+                tables[qkey] = _build_question_rows(
+                    rows, qkey, mappings, cfg, display_logic, dict(_EMPTY_GROUP)
+                )
+                table_meta[qkey] = {"qkey": qkey, "group_by": [], "n_groups": 1, "dropped_missing": 0}
+                continue
+
+            # Group rows by the (non-missing) tuple of grouping-variable values.
+            level_rows: dict[tuple, list] = defaultdict(list)
+            dropped = 0
+            for r in rows:
+                codes = tuple(str(r.get(gc, "")).strip() for gc in gcols)
+                if any(_is_missing(c) for c in codes):
+                    dropped += 1
+                    continue
+                level_rows[codes].append(r)
+
+            slug = f"{qkey}__by__{'_'.join(gcols)}"
+            out_rows: list[dict[str, Any]] = []
+            for codes in sorted(level_rows, key=lambda c: _group_level_sort_key(c, gcols, by_col)):
+                glabels = [
+                    (by_col[gc].get("response_labels") or {}).get(code, code)
+                    for gc, code in zip(gcols, codes)
+                ]
+                group_cols = {
+                    "group_keys": " | ".join(gcols),
+                    "group_codes": " | ".join(codes),
+                    "group_labels": " | ".join(glabels),
+                }
+                out_rows.extend(
+                    _build_question_rows(level_rows[codes], qkey, mappings, cfg, display_logic, group_cols)
+                )
+            tables[slug] = out_rows
+            table_meta[slug] = {
+                "qkey": qkey,
+                "group_by": gcols,
+                "n_groups": len(level_rows),
+                "dropped_missing": dropped,
+            }
+
+    return tables, text_outputs, {"table_specs": table_meta, "grouping_warnings": warnings}
 
 
 def run_frequency_analysis(data_path, column_map_path, outdir, config_path, strict=False, display_logic_path=None):
@@ -279,9 +378,11 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         display_logic_path = sibling if sibling.exists() else None
     display_logic = load_json(display_logic_path) if display_logic_path else {}
 
-    tables, text_outputs = generate_frequency_tables(rows, cmap, config, strict=strict, display_logic=display_logic)
+    tables, text_outputs, report_meta = generate_frequency_tables(
+        rows, cmap, config, strict=strict, display_logic=display_logic
+    )
 
-    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base"]
+    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base", "group_keys", "group_codes", "group_labels"]
     outs: list[Path] = []
     empty_output_tables: list[str] = []
     for qk in sorted(tables.keys()):
@@ -337,6 +438,12 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         "logic_not_evaluable": sorted(
             qk for qk, entry in display_logic.items() if not entry.get("fully_evaluable")
         ),
+        "grouped_tables": [
+            {"table": slug, **meta}
+            for slug, meta in sorted(report_meta["table_specs"].items())
+            if meta["group_by"] and slug in tables and tables[slug]
+        ],
+        "grouping_warnings": report_meta["grouping_warnings"],
         "output_files": [str(p) for p in outs],
     }
     (outdir / "frequency_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
