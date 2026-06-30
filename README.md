@@ -50,6 +50,24 @@ For raw mode, use `responses_raw.csv` with `--data`.
 
 Running the frequency stage also writes `report.html` (see below).
 
+## Validating the config
+
+The config is validated against the column map before each run, so a typo or bad value
+fails loudly instead of silently producing a wrong report. To check a config without
+running the analysis:
+
+```bash
+python -m qualtrics_pipeline.frequencies --column-map runs/example/column_map.json \
+  --config qualtrics_frequency_config.json --validate-config
+```
+
+Errors (exit code 1) include unknown option keys, invalid enum values
+(`sort_by`, `percent_base`, `orientation`, `overall`, `response_total`, `stats`,
+`text_reporting_mode`), bad types, and grouping variables that are missing or
+multi-select. Warnings (advisory) cover question keys not present in the column map and
+options placed on a table spec that are only honored at the question level. Warnings are
+also recorded in `frequency_manifest.json` under `config_warnings`.
+
 ## HTML validation report
 
 The frequency stage emits `report.html` in the output directory automatically. It
