@@ -8,7 +8,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from .survey_logic import evaluate as evaluate_logic
+
 SKIP_KEYS = ("is_metadata", "is_sensitive", "is_open_text")
+MULTI_SELECTORS = {"MAVR", "MAHR", "MACOL", "MSB"}
 
 
 def load_csv_rows(path: str | Path) -> list[dict[str, str]]:
@@ -59,7 +62,8 @@ def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
         if qid not in questions:
             questions[qid] = {
                 "include": True,
-                "frequency_mode": "auto",
+                "sort_by": "auto",
+                "percent_base": "eligible",
                 "response_order": [],
                 "text_entry_columns": {},
             }
@@ -67,7 +71,7 @@ def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
             questions[qid]["text_entry_columns"][m["column"]] = {
                 "text_reporting_mode": m.get("text_reporting_mode", "summarize_later")
             }
-    return {"defaults": {"frequency_mode": "auto"}, "questions": questions}
+    return {"defaults": {"sort_by": "auto"}, "questions": questions}
 
 
 def _question_looks_like(column: str) -> bool:
@@ -79,9 +83,232 @@ def _text_mode_for(mapping: dict[str, Any], question_cfg: dict[str, Any]) -> str
     return per_col.get("text_reporting_mode", mapping.get("text_reporting_mode", "skip"))
 
 
-def generate_frequency_tables(rows, column_map, config, strict=False):
+# Valid sort_by values and what they mean:
+#   survey_order  – follow the key order of response_labels (survey designer's order)
+#   count_desc    – most frequent first (default for nominal questions)
+#   count_asc     – least frequent first
+#   response_order – use the explicit response_order list from config
+SORT_BY_VALUES = {"survey_order", "count_desc", "count_asc", "response_order"}
+
+
+def _effective_sort_by(cfg: dict[str, Any], question_type: str) -> str:
+    """Resolve the sort_by mode from config, with legacy frequency_mode fallback."""
+    sort_by = cfg.get("sort_by")
+    if sort_by and sort_by in SORT_BY_VALUES:
+        return sort_by
+    # Legacy frequency_mode support
+    mode = cfg.get("frequency_mode", "auto")
+    if mode == "interval":
+        return "survey_order"
+    if mode == "nominal":
+        return "count_desc"
+    # auto: Matrix (Likert-type) defaults to survey_order, everything else count_desc
+    return "survey_order" if question_type == "Matrix" else "count_desc"
+
+
+def _ordered_codes(
+    counts: Counter,
+    sort_by: str,
+    response_order_cfg: list[str],
+    response_labels: dict[str, str],
+) -> list[str]:
+    """Return response codes in the requested display order."""
+    all_codes = set(counts.keys())
+
+    if sort_by == "response_order":
+        explicit = [c for c in response_order_cfg if c in all_codes]
+        remainder = sorted(
+            [c for c in all_codes if c not in set(explicit)],
+            key=lambda k: (-counts[k], k),
+        )
+        return explicit + remainder
+
+    if sort_by == "survey_order":
+        # Preserve the insertion order of response_labels (Qualtrics survey order).
+        in_order = [c for c in response_labels if c in all_codes]
+        remainder = sorted(
+            [c for c in all_codes if c not in set(response_labels)],
+            key=_numeric_sort_key,
+        )
+        return in_order + remainder
+
+    if sort_by == "count_asc":
+        return sorted(all_codes, key=lambda k: (counts[k], k))
+
+    # count_desc
+    return sorted(all_codes, key=lambda k: (-counts[k], k))
+
+
+def _eligible_n(rows, qkey, display_logic):
+    """Respondents eligible to see a question per its display logic.
+
+    Uses the question's display-logic tree when it is fully evaluable;
+    otherwise every respondent is treated as eligible.
+    """
+    entry = (display_logic or {}).get(qkey)
+    if not entry or not entry.get("fully_evaluable") or not entry.get("tree"):
+        return len(rows)
+    tree = entry["tree"]
+    return sum(1 for r in rows if evaluate_logic(tree, r))
+
+
+# The percentage denominators every frequency row carries:
+#   valid    – respondents who answered the question
+#   eligible – respondents shown the question (display logic); == total when
+#              the question has no display logic
+#   total    – all survey respondents (prevalence base)
+# percent_base names which of these the report should feature by default.
+PERCENT_BASES = {"valid", "eligible", "total"}
+
+# Presentation options consumed by the report layer (not the computation).
+# Resolved per table and stamped into the manifest so the reporting code reads
+# them from the data contract rather than re-parsing the config.
+STAT_KEYS = {
+    "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct",
+    "total_n", "total_pct", "pct", "base_n",
+}
+PRESENTATION_DEFAULTS = {
+    "show_code": True,
+    "orientation": "columns",   # group levels as columns; "rows" transposes
+    "overall": False,           # False | "before" | "after"
+    "response_total": False,    # False | "before" | "after"
+    "stats": None,              # None -> renderer default
+}
+
+
+def _resolve_presentation(cfg: dict, spec: dict) -> dict:
+    """Resolve report presentation options: table spec over question over defaults."""
+    out = dict(PRESENTATION_DEFAULTS)
+    for key in PRESENTATION_DEFAULTS:
+        if key in cfg:
+            out[key] = cfg[key]
+        if key in spec:
+            out[key] = spec[key]
+    if out["orientation"] not in ("columns", "rows"):
+        out["orientation"] = "columns"
+    if out["overall"] not in (False, "before", "after"):
+        out["overall"] = False
+    if out["response_total"] not in (False, "before", "after"):
+        out["response_total"] = False
+    if out["show_code"] not in (True, False):
+        out["show_code"] = True
+    if out["stats"] is not None:
+        cleaned = [s for s in out["stats"] if s in STAT_KEYS]
+        out["stats"] = cleaned or None
+    return out
+
+
+def _pct(numerator: int, denom: int) -> float:
+    return round((numerator / denom) * 100.0, 2) if denom else 0.0
+
+
+# Empty group columns for ungrouped (overall) tables.
+_EMPTY_GROUP = {"group_keys": "", "group_codes": "", "group_labels": ""}
+
+
+def _group_level_sort_key(codes, gcols, by_col):
+    """Order group levels by each grouping column's survey (label) order."""
+    key = []
+    for gc, code in zip(gcols, codes):
+        label_keys = list((by_col.get(gc, {}).get("response_labels") or {}).keys())
+        idx = label_keys.index(code) if code in label_keys else len(label_keys)
+        key.append((idx, _numeric_sort_key(code)))
+    return key
+
+
+def _build_question_rows(subset, qkey, mappings, cfg, display_logic, group_cols):
+    """Frequency rows for a question computed over a subset of respondents.
+
+    All three bases (valid/eligible/total) are computed within ``subset`` so
+    grouped tables report within-group percentages. ``group_cols`` carries the
+    group_keys/group_codes/group_labels stamped onto every emitted row.
+    """
+    total_n = len(subset)
+    question_total_n = sum(
+        1 for r in subset if any(not _is_missing(r.get(m["column"])) for m in mappings)
+    )
+    eligible_n = _eligible_n(subset, qkey, display_logic)
+    report_base = cfg.get("percent_base", "eligible")
+    if report_base not in PERCENT_BASES:
+        report_base = "eligible"
+
+    out_rows = []
+    for m in mappings:
+        vals = [str(r.get(m["column"], "")).strip() for r in subset]
+        valid = [v for v in vals if not _is_missing(v)]
+        if not valid:
+            continue
+        counts = Counter(valid)
+        question_type = m.get("question_type", "")
+        # scale_type is a semantic descriptor of the measurement scale.
+        # interval: ordered/numeric (Matrix Likert, NPS); nominal: categorical.
+        mode = cfg.get("frequency_mode", "auto")
+        scale_type = (
+            "interval"
+            if (mode == "interval" or (mode == "auto" and question_type in {"Matrix", "NPS"}))
+            else "nominal"
+        )
+        labels = m.get("response_labels", {}) or {}
+        sort_by = _effective_sort_by(cfg, question_type)
+        response_order_cfg = [str(x) for x in (cfg.get("response_order", []) or [])]
+        ordered = _ordered_codes(counts, sort_by, response_order_cfg, labels)
+        # Multi-select columns store "1" when selected and blank otherwise,
+        # so a per-column non-missing count would equal n (always 100%). Use
+        # the question-level "answered any option" total as the valid base.
+        is_multi_select = m.get("selector") in MULTI_SELECTORS
+        valid_n = question_total_n if is_multi_select else len(valid)
+        for code in ordered:
+            n = counts[code]
+            row = {
+                "question_key": qkey,
+                "question_id": m.get("data_export_tag", ""),
+                "question_text": m.get("question_text", ""),
+                "question_type": m.get("question_type", ""),
+                "attribute": m.get("sub_question_text", ""),
+                "column": m["column"],
+                "scale_type": scale_type,
+                "response_code": code,
+                "response_label": labels.get(code, code),
+                "n": n,
+                "valid_n": valid_n,
+                "valid_pct": _pct(n, valid_n),
+                "eligible_n": eligible_n,
+                "eligible_pct": _pct(n, eligible_n),
+                "total_n": total_n,
+                "total_pct": _pct(n, total_n),
+                "report_base": report_base,
+            }
+            row.update(group_cols)
+            out_rows.append(row)
+    return out_rows
+
+
+def _table_specs(cfg):
+    """Per-question list of table specs; defaults to a single overall table."""
+    specs = cfg.get("tables")
+    if not specs:
+        return [{"group_by": []}]
+    return specs
+
+
+def _validate_group_by(qkey, gcols, by_col, warnings):
+    """Return True if every grouping column is a usable single-answer column."""
+    for gc in gcols:
+        gm = by_col.get(gc)
+        if gm is None:
+            warnings.append(f"{qkey}: grouping variable '{gc}' not found; table skipped")
+            return False
+        if gm.get("selector") in MULTI_SELECTORS:
+            warnings.append(
+                f"{qkey}: multi-select grouping variable '{gc}' not supported; table skipped"
+            )
+            return False
+    return True
+
+
+def generate_frequency_tables(rows, column_map, config, strict=False, display_logic=None):
     if not rows:
-        return {}, {}
+        return {}, {}, {"table_specs": {}, "grouping_warnings": []}
 
     by_col = {m["column"]: m for m in column_map}
     all_cols = list(rows[0].keys())
@@ -112,50 +339,71 @@ def generate_frequency_tables(rows, column_map, config, strict=False):
             continue
         grouped[qkey].append(m)
 
-    tables = {}
+    display_logic = display_logic or {}
+    tables: dict[str, list[dict[str, Any]]] = {}
+    table_meta: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+
     for qkey, mappings in grouped.items():
         cfg = dict(defaults)
         cfg.update(qcfgs.get(qkey, {}))
         if cfg.get("include", True) is False:
             continue
 
-        question_total_n = sum(1 for r in rows if any(not _is_missing(r.get(m["column"])) for m in mappings))
-        out_rows = []
-        for m in mappings:
-            vals = [str(r.get(m["column"], "")).strip() for r in rows]
-            valid = [v for v in vals if not _is_missing(v)]
-            if not valid:
+        for spec in _table_specs(cfg):
+            gcols = [str(g) for g in (spec.get("group_by") or [])]
+            if not _validate_group_by(qkey, gcols, by_col, warnings):
                 continue
-            counts = Counter(valid)
-            mode = cfg.get("frequency_mode", "auto")
-            scale_type = "interval" if (mode == "interval" or (mode == "auto" and m.get("question_type") == "Matrix")) else "nominal"
-            response_order = [str(x) for x in (cfg.get("response_order", []) or []) if str(x) in counts]
-            if scale_type == "interval":
-                ordered = response_order + sorted([x for x in counts if x not in response_order], key=_numeric_sort_key)
-            else:
-                ordered = response_order + [k for k, _ in sorted(((k, v) for k, v in counts.items() if k not in response_order), key=lambda kv: (-kv[1], kv[0]))]
-            labels = m.get("response_labels", {}) or {}
-            for code in ordered:
-                out_rows.append({
-                    "question_key": qkey,
-                    "question_id": m.get("data_export_tag", ""),
-                    "question_text": m.get("question_text", ""),
-                    "question_type": m.get("question_type", ""),
-                    "attribute": m.get("sub_question_text", ""),
-                    "column": m["column"],
-                    "scale_type": scale_type,
-                    "response_code": code,
-                    "response_label": labels.get(code, code),
-                    "n": counts[code],
-                    "valid_pct": round((counts[code] / len(valid)) * 100.0, 2),
-                    "valid_n": len(valid),
-                    "question_total_n": question_total_n,
-                })
-        tables[qkey] = out_rows
-    return tables, text_outputs
+            presentation = _resolve_presentation(cfg, spec)
+
+            if not gcols:
+                tables[qkey] = _build_question_rows(
+                    rows, qkey, mappings, cfg, display_logic, dict(_EMPTY_GROUP)
+                )
+                table_meta[qkey] = {
+                    "qkey": qkey, "group_by": [], "n_groups": 1,
+                    "dropped_missing": 0, "presentation": presentation,
+                }
+                continue
+
+            # Group rows by the (non-missing) tuple of grouping-variable values.
+            level_rows: dict[tuple, list] = defaultdict(list)
+            dropped = 0
+            for r in rows:
+                codes = tuple(str(r.get(gc, "")).strip() for gc in gcols)
+                if any(_is_missing(c) for c in codes):
+                    dropped += 1
+                    continue
+                level_rows[codes].append(r)
+
+            slug = f"{qkey}__by__{'_'.join(gcols)}"
+            out_rows: list[dict[str, Any]] = []
+            for codes in sorted(level_rows, key=lambda c: _group_level_sort_key(c, gcols, by_col)):
+                glabels = [
+                    (by_col[gc].get("response_labels") or {}).get(code, code)
+                    for gc, code in zip(gcols, codes)
+                ]
+                group_cols = {
+                    "group_keys": " | ".join(gcols),
+                    "group_codes": " | ".join(codes),
+                    "group_labels": " | ".join(glabels),
+                }
+                out_rows.extend(
+                    _build_question_rows(level_rows[codes], qkey, mappings, cfg, display_logic, group_cols)
+                )
+            tables[slug] = out_rows
+            table_meta[slug] = {
+                "qkey": qkey,
+                "group_by": gcols,
+                "n_groups": len(level_rows),
+                "dropped_missing": dropped,
+                "presentation": presentation,
+            }
+
+    return tables, text_outputs, {"table_specs": table_meta, "grouping_warnings": warnings}
 
 
-def run_frequency_analysis(data_path, column_map_path, outdir, config_path, strict=False):
+def run_frequency_analysis(data_path, column_map_path, outdir, config_path, strict=False, display_logic_path=None):
     outdir = Path(outdir)
     freq_dir = outdir / "frequency_tables"
     text_dir = outdir / "open_text_outputs"
@@ -165,9 +413,18 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
     rows = load_csv_rows(data_path)
     cmap = load_json(column_map_path)
     config = load_json(config_path)
-    tables, text_outputs = generate_frequency_tables(rows, cmap, config, strict=strict)
 
-    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_pct", "valid_n", "question_total_n"]
+    # Load display logic: explicit path, else a sibling of the column map.
+    if display_logic_path is None:
+        sibling = Path(column_map_path).with_name("display_logic.json")
+        display_logic_path = sibling if sibling.exists() else None
+    display_logic = load_json(display_logic_path) if display_logic_path else {}
+
+    tables, text_outputs, report_meta = generate_frequency_tables(
+        rows, cmap, config, strict=strict, display_logic=display_logic
+    )
+
+    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base", "group_keys", "group_codes", "group_labels"]
     outs: list[Path] = []
     empty_output_tables: list[str] = []
     for qk in sorted(tables.keys()):
@@ -215,9 +472,35 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         "empty_output_tables": empty_output_tables,
         "text_entry_outputs": [str(p) for p in outs if "open_text_outputs" in str(p)],
         "strict_mode": strict,
+        "conditional_questions": {
+            qk: _eligible_n(rows, qk, display_logic)
+            for qk, entry in display_logic.items()
+            if entry.get("fully_evaluable")
+        },
+        "logic_not_evaluable": sorted(
+            qk for qk, entry in display_logic.items() if not entry.get("fully_evaluable")
+        ),
+        "grouped_tables": [
+            {"table": slug, "qkey": meta["qkey"], "group_by": meta["group_by"],
+             "n_groups": meta["n_groups"], "dropped_missing": meta["dropped_missing"]}
+            for slug, meta in sorted(report_meta["table_specs"].items())
+            if meta["group_by"] and slug in tables and tables[slug]
+        ],
+        "grouping_warnings": report_meta["grouping_warnings"],
+        "table_presentation": {
+            slug: meta["presentation"]
+            for slug, meta in report_meta["table_specs"].items()
+            if slug in tables and tables[slug]
+        },
         "output_files": [str(p) for p in outs],
     }
     (outdir / "frequency_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    # Emit an HTML validation report alongside the CSV artifacts.
+    from .report import generate_html_report
+
+    report_path = generate_html_report(outdir)
+    outs.append(report_path)
     return outs
 
 
@@ -227,6 +510,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--column-map", required=True)
     p.add_argument("--outdir", default="analysis_output")
     p.add_argument("--config", default="qualtrics_frequency_config.json")
+    p.add_argument("--display-logic", required=False, help="Path to display_logic.json (defaults to sibling of --column-map)")
     p.add_argument("--init-config", action="store_true")
     p.add_argument("--strict", action="store_true")
     return p.parse_args()
@@ -247,7 +531,9 @@ def main() -> None:
         cmap = load_json(args.column_map)
         cp.write_text(json.dumps(build_default_config(cmap), indent=2), encoding="utf-8")
 
-    outs = run_frequency_analysis(args.data, args.column_map, args.outdir, cp, strict=args.strict)
+    outs = run_frequency_analysis(
+        args.data, args.column_map, args.outdir, cp, strict=args.strict, display_logic_path=args.display_logic
+    )
     print(f"Wrote {len(outs)} output file(s)")
 
 
