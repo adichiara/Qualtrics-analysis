@@ -146,3 +146,30 @@ Notes:
   unknown columns) are skipped with a note in `grouping_warnings`.
 - Multiple grouping variables in one spec (`"group_by": ["Q1.9", "Q2.4"]`) are supported;
   levels are the observed combinations of values.
+
+## Table presentation options
+
+Presentation is controlled per table spec (falling back to the question level, then
+`defaults`). These options affect only how the report renders — every stat is always
+computed and stored. The resolved options are written to `frequency_manifest.json` under
+`table_presentation[slug]` so downstream reporting code can consume the same contract.
+
+```jsonc
+"QID16": {
+  "tables": [
+    { "group_by": ["Q1.9"],
+      "show_code": false,          // hide the response-code column (default true)
+      "orientation": "columns",    // group levels as columns (default) | "rows" (transpose)
+      "overall": "after",          // add an Overall (ungrouped) column/row: false | "before" | "after"
+      "response_total": "after",   // add a Total over response options: false | "before" | "after"
+      "stats": ["n", "pct"]        // which stats to show per cell/column
+    }
+  ]
+}
+```
+
+`stats` values: `n`, `valid_n`, `valid_pct`, `eligible_n`, `eligible_pct`, `total_n`,
+`total_pct`, plus `pct` and `base_n` (aliases for the featured `report_base`'s percent and
+count). When unset, flat tables show `n` + all three percents and crosstab cells show
+`n` + the featured percent. `orientation`, `overall`, and `response_total` apply to grouped
+tables; `overall` requires the question's ungrouped table to also be produced.
