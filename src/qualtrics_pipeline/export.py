@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .survey_logic import build_display_logic_map
 
 SENSITIVE_COLUMNS = {
     "RecipientFirstName",
@@ -42,6 +46,13 @@ METADATA_COLUMNS = {
 }
 
 MULTI_SELECTORS = {"MAVR", "MAHR", "MACOL", "MSB"}
+
+
+def _strip_html(text: str) -> str:
+    """Strip HTML tags and unescape entities, collapsing resulting whitespace."""
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html.unescape(text)
+    return ' '.join(text.split())
 
 
 def _extract_display(node: dict[str, Any]) -> str:
@@ -151,7 +162,7 @@ def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) 
         "question_type": qtype,
         "selector": selector,
         "subselector": subselector,
-        "question_text": q.get("QuestionText", ""),
+        "question_text": _strip_html(q.get("QuestionText", "")),
         "sub_question_text": sub_question_text,
         "response_labels": response_labels,
         "is_open_text": is_open_text,
@@ -277,6 +288,9 @@ def main() -> None:
     cmap = build_column_map(args.survey_id, list(source_df.columns), questions_meta)
     (outdir / "column_map.json").write_text(json.dumps(cmap, indent=2), encoding="utf-8")
 
+    display_logic = build_display_logic_map(questions_meta)
+    (outdir / "display_logic.json").write_text(json.dumps(display_logic, indent=2), encoding="utf-8")
+
     codebook_rows = [
         {
             "column": row["column"],
@@ -319,7 +333,7 @@ def main() -> None:
         ],
     )
 
-    artifacts = ["survey_metadata.json", "questions_meta.json", "column_map.json", "codebook.csv", "run_manifest.json"]
+    artifacts = ["survey_metadata.json", "questions_meta.json", "column_map.json", "display_logic.json", "codebook.csv", "run_manifest.json"]
     if args.privacy_mode == "deidentified":
         artifacts.insert(0, "responses_clean.csv")
     elif args.privacy_mode == "internal":
