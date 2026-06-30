@@ -233,3 +233,64 @@ def test_build_default_config_emits_sort_by() -> None:
     assert cfg["defaults"]["sort_by"] == "auto"
     assert cfg["questions"]["QID1"]["sort_by"] == "auto"
     assert "frequency_mode" not in cfg["defaults"]
+
+
+# ---------------------------------------------------------------------------
+# Display-logic base_n tests
+# ---------------------------------------------------------------------------
+
+def test_base_n_reflects_display_logic() -> None:
+    """A conditional question's base_n = respondents the logic shows it to.
+
+    Q_A (gate): Yes/No. Q_B shown only when Q_A == "1" (Yes).
+    Two said Yes; of those, one answered Q_B and one (eligible) left it blank.
+    base_n must be 2 (both eligible), while valid_n is 1 (one answered).
+    """
+    rows = [
+        {"Q_A": "1", "Q_B": "5"},  # Yes, answered Q_B
+        {"Q_A": "1", "Q_B": ""},   # Yes, eligible but skipped Q_B
+        {"Q_A": "0", "Q_B": ""},   # No, not shown Q_B
+        {"Q_A": "0", "Q_B": ""},   # No, not shown Q_B
+    ]
+    column_map = [
+        _mc_col("Q_A", {"0": "No", "1": "Yes"}),
+        {
+            "survey_id": "SV_1", "qid": "QID_B", "data_export_tag": "QID_B",
+            "column": "Q_B", "question_type": "MC", "selector": "SAVR",
+            "question_text": "How many?", "sub_question_text": "",
+            "response_labels": {"5": "Five"},
+            "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+            "is_text_entry_suffix": False, "parent_question_key": "QID_B",
+            "parent_choice_code": "", "parent_choice_label": "",
+            "text_reporting_mode": "skip",
+        },
+    ]
+    config = {"defaults": {}, "questions": {}}
+    display_logic = {
+        "QID_B": {
+            "fully_evaluable": True,
+            "tree": {"type": "pred", "column": "Q_A", "op": "equals", "value": "1"},
+        }
+    }
+    tables, _ = generate_frequency_tables(rows, column_map, config, display_logic=display_logic)
+
+    qb = tables["QID_B"]
+    assert len(qb) == 1  # one observed response value ("5")
+    row = qb[0]
+    assert row["n"] == 1
+    assert row["valid_n"] == 1       # one respondent actually answered
+    assert row["base_n"] == 2        # two were eligible (shown the question)
+    assert row["valid_pct"] == 100.0  # 1/1
+    assert row["base_pct"] == 50.0    # 1/2
+
+    # Unconditional Q_A (keyed under _mc_col's qid "QSORT"): base_n is the full count.
+    assert tables["QSORT"][0]["base_n"] == 4
+
+
+def test_base_n_defaults_to_all_respondents_without_logic() -> None:
+    rows = [{"Q": "1"}, {"Q": "2"}, {"Q": ""}]
+    column_map = [_mc_col("Q", {"1": "A", "2": "B"})]
+    config = {"defaults": {}, "questions": {}}
+    tables, _ = generate_frequency_tables(rows, column_map, config)  # no display_logic
+    for row in tables["QSORT"]:
+        assert row["base_n"] == 3  # all respondents eligible

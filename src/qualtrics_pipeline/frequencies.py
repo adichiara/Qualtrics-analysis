@@ -8,6 +8,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from .survey_logic import evaluate as evaluate_logic
+
 SKIP_KEYS = ("is_metadata", "is_sensitive", "is_open_text")
 MULTI_SELECTORS = {"MAVR", "MAHR", "MACOL", "MSB"}
 
@@ -136,7 +138,20 @@ def _ordered_codes(
     return sorted(all_codes, key=lambda k: (-counts[k], k))
 
 
-def generate_frequency_tables(rows, column_map, config, strict=False):
+def _compute_base_n(rows, qkey, display_logic):
+    """Number of respondents eligible to see a question.
+
+    Uses the question's display-logic tree when it is fully evaluable;
+    otherwise every respondent is treated as eligible.
+    """
+    entry = (display_logic or {}).get(qkey)
+    if not entry or not entry.get("fully_evaluable") or not entry.get("tree"):
+        return len(rows)
+    tree = entry["tree"]
+    return sum(1 for r in rows if evaluate_logic(tree, r))
+
+
+def generate_frequency_tables(rows, column_map, config, strict=False, display_logic=None):
     if not rows:
         return {}, {}
 
@@ -177,6 +192,9 @@ def generate_frequency_tables(rows, column_map, config, strict=False):
             continue
 
         question_total_n = sum(1 for r in rows if any(not _is_missing(r.get(m["column"])) for m in mappings))
+        # base_n: respondents eligible to see this question per display logic.
+        # For unconditional questions this is the full respondent count.
+        base_n = _compute_base_n(rows, qkey, display_logic)
         out_rows = []
         for m in mappings:
             vals = [str(r.get(m["column"], "")).strip() for r in rows]
@@ -217,13 +235,15 @@ def generate_frequency_tables(rows, column_map, config, strict=False):
                     "n": counts[code],
                     "valid_pct": round((counts[code] / pct_denom) * 100.0, 2) if pct_denom else 0.0,
                     "valid_n": reported_valid_n,
+                    "base_pct": round((counts[code] / base_n) * 100.0, 2) if base_n else 0.0,
+                    "base_n": base_n,
                     "question_total_n": question_total_n,
                 })
         tables[qkey] = out_rows
     return tables, text_outputs
 
 
-def run_frequency_analysis(data_path, column_map_path, outdir, config_path, strict=False):
+def run_frequency_analysis(data_path, column_map_path, outdir, config_path, strict=False, display_logic_path=None):
     outdir = Path(outdir)
     freq_dir = outdir / "frequency_tables"
     text_dir = outdir / "open_text_outputs"
@@ -233,9 +253,16 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
     rows = load_csv_rows(data_path)
     cmap = load_json(column_map_path)
     config = load_json(config_path)
-    tables, text_outputs = generate_frequency_tables(rows, cmap, config, strict=strict)
 
-    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_pct", "valid_n", "question_total_n"]
+    # Load display logic: explicit path, else a sibling of the column map.
+    if display_logic_path is None:
+        sibling = Path(column_map_path).with_name("display_logic.json")
+        display_logic_path = sibling if sibling.exists() else None
+    display_logic = load_json(display_logic_path) if display_logic_path else {}
+
+    tables, text_outputs = generate_frequency_tables(rows, cmap, config, strict=strict, display_logic=display_logic)
+
+    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_pct", "valid_n", "base_pct", "base_n", "question_total_n"]
     outs: list[Path] = []
     empty_output_tables: list[str] = []
     for qk in sorted(tables.keys()):
@@ -283,6 +310,14 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         "empty_output_tables": empty_output_tables,
         "text_entry_outputs": [str(p) for p in outs if "open_text_outputs" in str(p)],
         "strict_mode": strict,
+        "conditional_questions": {
+            qk: _compute_base_n(rows, qk, display_logic)
+            for qk, entry in display_logic.items()
+            if entry.get("fully_evaluable")
+        },
+        "logic_not_evaluable": sorted(
+            qk for qk, entry in display_logic.items() if not entry.get("fully_evaluable")
+        ),
         "output_files": [str(p) for p in outs],
     }
     (outdir / "frequency_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -295,6 +330,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--column-map", required=True)
     p.add_argument("--outdir", default="analysis_output")
     p.add_argument("--config", default="qualtrics_frequency_config.json")
+    p.add_argument("--display-logic", required=False, help="Path to display_logic.json (defaults to sibling of --column-map)")
     p.add_argument("--init-config", action="store_true")
     p.add_argument("--strict", action="store_true")
     return p.parse_args()
@@ -315,7 +351,9 @@ def main() -> None:
         cmap = load_json(args.column_map)
         cp.write_text(json.dumps(build_default_config(cmap), indent=2), encoding="utf-8")
 
-    outs = run_frequency_analysis(args.data, args.column_map, args.outdir, cp, strict=args.strict)
+    outs = run_frequency_analysis(
+        args.data, args.column_map, args.outdir, cp, strict=args.strict, display_logic_path=args.display_logic
+    )
     print(f"Wrote {len(outs)} output file(s)")
 
 
