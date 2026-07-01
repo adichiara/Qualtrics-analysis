@@ -292,6 +292,29 @@ def test_groupable_questions_doc_excludes_multiselect_and_text_entry() -> None:
     assert doc == {"Q1": "Single"}
 
 
+def test_groupable_questions_doc_keys_by_column_not_tag_for_matrix() -> None:
+    """A Matrix question's rows are separate columns sharing one
+    data_export_tag; the reference must advertise the actual column (what
+    group_by is validated against), not the shared tag, or a user following it
+    would write an unresolvable group_by value (Codex review, PR #7)."""
+    from qualtrics_pipeline.frequencies import _groupable_questions_doc
+
+    column_map = [
+        {"qid": "QID3", "data_export_tag": "Q3", "column": "Q3_1", "question_type": "Matrix",
+         "question_text": "Rate your experience", "sub_question_text": "Service", "selector": "",
+         "is_metadata": False, "is_sensitive": False, "is_open_text": False, "is_text_entry_suffix": False},
+        {"qid": "QID3", "data_export_tag": "Q3", "column": "Q3_2", "question_type": "Matrix",
+         "question_text": "Rate your experience", "sub_question_text": "Support", "selector": "",
+         "is_metadata": False, "is_sensitive": False, "is_open_text": False, "is_text_entry_suffix": False},
+    ]
+    doc = _groupable_questions_doc(column_map)
+    # Keyed by the resolvable column, not the shared tag "Q3" (which is not a
+    # column and would fail group_by validation).
+    assert "Q3" not in doc
+    assert doc["Q3_1"] == "Rate your experience — Service"
+    assert doc["Q3_2"] == "Rate your experience — Support"
+
+
 # ---------------------------------------------------------------------------
 # Display-logic base_n tests
 # ---------------------------------------------------------------------------
