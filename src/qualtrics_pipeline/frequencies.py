@@ -216,13 +216,24 @@ def _question_doc_fields(column_map: list[dict[str, Any]], qkey: str) -> dict[st
 
 
 def _groupable_questions_doc(column_map: list[dict[str, Any]]) -> dict[str, str]:
-    """{tag: question_text} reference for valid group_by values, in survey order."""
+    """{column: description} reference for valid group_by values, in survey order.
+
+    Keyed by the actual export column, not the data_export_tag: group_by is
+    validated and resolved against column names (see by_col in
+    config_validate/generate_frequency_tables). A Matrix question's rows are
+    separate columns sharing one tag (e.g. column "Q3_1" under tag "Q3"), so
+    the tag alone is not a resolvable group_by value.
+    """
     out: dict[str, str] = {}
     for m in column_map:
         if not _is_groupable(m):
             continue
-        tag = m.get("data_export_tag") or m["column"]
-        out.setdefault(tag, m.get("question_text", ""))
+        col = m["column"]
+        if col in out:
+            continue
+        text = m.get("question_text", "")
+        sub = m.get("sub_question_text", "")
+        out[col] = f"{text} — {sub}" if sub else text
     return out
 
 
@@ -242,7 +253,7 @@ def _config_reference() -> dict[str, str]:
         "tables": (
             "list of breakout tables, e.g. [{\"group_by\": [\"Q1.9\"], \"orientation\": \"columns\", "
             "\"overall\": false, \"response_total\": false}]. Omit for a single overall table. "
-            "See _groupable_questions below for valid group_by tags."
+            "See _groupable_questions below for valid group_by values (columns, not question tags)."
         ),
     }
 
