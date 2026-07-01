@@ -414,6 +414,17 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
     cmap = load_json(column_map_path)
     config = load_json(config_path)
 
+    # Fail loud on config errors so a typo can't yield a subtly wrong report.
+    from .config_validate import format_issues, validate_config
+
+    issues = validate_config(config, cmap)
+    errors = [i for i in issues if i[0] == "error"]
+    warnings = [i for i in issues if i[0] == "warning"]
+    if warnings:
+        print(format_issues(warnings))
+    if errors:
+        raise SystemExit("Invalid config:\n" + format_issues(errors))
+
     # Load display logic: explicit path, else a sibling of the column map.
     if display_logic_path is None:
         sibling = Path(column_map_path).with_name("display_logic.json")
@@ -487,6 +498,7 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
             if meta["group_by"] and slug in tables and tables[slug]
         ],
         "grouping_warnings": report_meta["grouping_warnings"],
+        "config_warnings": [f"{where}: {msg}" for _level, where, msg in warnings],
         "table_presentation": {
             slug: meta["presentation"]
             for slug, meta in report_meta["table_specs"].items()
@@ -512,6 +524,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", default="qualtrics_frequency_config.json")
     p.add_argument("--display-logic", required=False, help="Path to display_logic.json (defaults to sibling of --column-map)")
     p.add_argument("--init-config", action="store_true")
+    p.add_argument("--validate-config", action="store_true", help="Validate the config against the column map and exit")
     p.add_argument("--strict", action="store_true")
     return p.parse_args()
 
@@ -522,6 +535,19 @@ def main() -> None:
         cmap = load_json(args.column_map)
         Path(args.config).write_text(json.dumps(build_default_config(cmap), indent=2), encoding="utf-8")
         print(f"Created config file: {args.config}")
+        return
+    if args.validate_config:
+        from .config_validate import format_issues, validate_config
+
+        cmap = load_json(args.column_map)
+        config = load_json(args.config)
+        issues = validate_config(config, cmap)
+        if issues:
+            print(format_issues(issues))
+        errors = [i for i in issues if i[0] == "error"]
+        if errors:
+            raise SystemExit(f"{len(errors)} config error(s)")
+        print("Config OK" if not issues else f"Config OK with {len(issues)} warning(s)")
         return
     if not args.data:
         raise SystemExit("--data is required unless using --init-config")

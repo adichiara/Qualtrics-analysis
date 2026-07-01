@@ -9,6 +9,35 @@ pip install -e .
 pip install -e '.[dev]'
 ```
 
+## Interactive menu (recommended for everyday use)
+
+Instead of chaining the module CLIs by hand, run:
+
+```bash
+qualtrics
+# or: python -m qualtrics_pipeline.cli
+```
+
+This gives a numbered menu to export a survey, initialize/validate a frequency config,
+run the analysis, regenerate the HTML report, or run the full pipeline end to end. It
+discovers existing run directories under `runs/`, remembers your last survey ID / run
+directory / config path between sessions (in `.qualtrics_cli_state.json`, gitignored),
+and offers to open `report.html` in a browser when a run finishes. It's a thin wrapper
+around the same functions the module CLIs below use, so either approach produces
+identical output — use the menu day to day and the module CLIs for scripting/automation.
+
+### Configuring a question's reporting options from the menu
+
+"Configure question reporting options" lets you set a question's `sort_by`,
+`percent_base`, `show_code`, `stats`, and grouped-table breakouts without hand-writing
+JSON. Find a question by typing its number, its tag (e.g. `Q1.5`), or part of its
+question text (an ambiguous search shows the matches to pick from); then walk through
+its settings, add/remove breakouts by picking a grouping question from a list (only
+single-answer questions are offered, and the question you're editing is excluded from
+its own list), and choose whether to add an Overall column/row, transpose group levels
+to rows, or add a Total across response options. Changes are written to the config file
+when you type `done`, and the config is validated immediately afterward.
+
 ## Export stage
 
 ```bash
@@ -49,6 +78,24 @@ python -m qualtrics_pipeline.frequencies \
 For raw mode, use `responses_raw.csv` with `--data`.
 
 Running the frequency stage also writes `report.html` (see below).
+
+## Validating the config
+
+The config is validated against the column map before each run, so a typo or bad value
+fails loudly instead of silently producing a wrong report. To check a config without
+running the analysis:
+
+```bash
+python -m qualtrics_pipeline.frequencies --column-map runs/example/column_map.json \
+  --config qualtrics_frequency_config.json --validate-config
+```
+
+Errors (exit code 1) include unknown option keys, invalid enum values
+(`sort_by`, `percent_base`, `orientation`, `overall`, `response_total`, `stats`,
+`text_reporting_mode`), bad types, and grouping variables that are missing or
+multi-select. Warnings (advisory) cover question keys not present in the column map and
+options placed on a table spec that are only honored at the question level. Warnings are
+also recorded in `frequency_manifest.json` under `config_warnings`.
 
 ## HTML validation report
 

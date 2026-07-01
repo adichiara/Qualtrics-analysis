@@ -255,37 +255,41 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    outdir = Path(args.outdir)
+def run_export(survey_id: str, outdir: str | Path, privacy_mode: str = "deidentified") -> Path:
+    """Export a survey's artifacts to ``outdir``. Returns ``outdir`` as a Path.
+
+    Callable entry point used by both the argparse CLI and the interactive
+    menu (cli.py), so both stay in sync with a single implementation.
+    """
+    outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
     env = load_env()
     configure_qualtrics_client(env)
-    survey_meta = get_survey_metadata(env["base_url"], args.survey_id, env["token"])
+    survey_meta = get_survey_metadata(env["base_url"], survey_id, env["token"])
     questions_meta = survey_meta.get("Questions", {})
 
-    raw_df = fetch_responses_df(args.survey_id)
+    raw_df = fetch_responses_df(survey_id)
     clean_df = raw_df.copy()
     if len(clean_df) >= 2:
         clean_df = clean_df.iloc[2:].reset_index(drop=True)
 
-    if args.privacy_mode == "deidentified":
+    if privacy_mode == "deidentified":
         clean_df = clean_df.drop(columns=[c for c in clean_df.columns if c in SENSITIVE_COLUMNS], errors="ignore")
         clean_df.to_csv(outdir / "responses_clean.csv", index=False)
-    elif args.privacy_mode == "internal":
+    elif privacy_mode == "internal":
         raw_df.to_csv(outdir / "responses_raw.csv", index=False)
         clean_df = clean_df.drop(columns=[c for c in clean_df.columns if c in SENSITIVE_COLUMNS], errors="ignore")
         clean_df.to_csv(outdir / "responses_clean.csv", index=False)
     else:
         raw_df.to_csv(outdir / "responses_raw.csv", index=False)
 
-    source_df = clean_df if args.privacy_mode != "raw" else raw_df
+    source_df = clean_df if privacy_mode != "raw" else raw_df
 
     (outdir / "survey_metadata.json").write_text(json.dumps(survey_meta, indent=2), encoding="utf-8")
     (outdir / "questions_meta.json").write_text(json.dumps(questions_meta, indent=2), encoding="utf-8")
 
-    cmap = build_column_map(args.survey_id, list(source_df.columns), questions_meta)
+    cmap = build_column_map(survey_id, list(source_df.columns), questions_meta)
     (outdir / "column_map.json").write_text(json.dumps(cmap, indent=2), encoding="utf-8")
 
     display_logic = build_display_logic_map(questions_meta)
@@ -334,17 +338,23 @@ def main() -> None:
     )
 
     artifacts = ["survey_metadata.json", "questions_meta.json", "column_map.json", "display_logic.json", "codebook.csv", "run_manifest.json"]
-    if args.privacy_mode == "deidentified":
+    if privacy_mode == "deidentified":
         artifacts.insert(0, "responses_clean.csv")
-    elif args.privacy_mode == "internal":
+    elif privacy_mode == "internal":
         artifacts = ["responses_raw.csv", "responses_clean.csv", *artifacts]
     else:
         artifacts = ["responses_raw.csv", *artifacts]
 
-    data_file = "responses_raw.csv" if args.privacy_mode == "raw" else "responses_clean.csv"
-    rows_output = int(len(raw_df)) if args.privacy_mode == "raw" else int(len(clean_df))
-    manifest = build_run_manifest(args.survey_id, args.privacy_mode, int(len(raw_df)), rows_output, data_file, list(source_df.columns), artifacts)
+    data_file = "responses_raw.csv" if privacy_mode == "raw" else "responses_clean.csv"
+    rows_output = int(len(raw_df)) if privacy_mode == "raw" else int(len(clean_df))
+    manifest = build_run_manifest(survey_id, privacy_mode, int(len(raw_df)), rows_output, data_file, list(source_df.columns), artifacts)
     (outdir / "run_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return outdir
+
+
+def main() -> None:
+    args = parse_args()
+    run_export(args.survey_id, args.outdir, args.privacy_mode)
 
 
 if __name__ == "__main__":
