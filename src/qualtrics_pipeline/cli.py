@@ -226,7 +226,7 @@ def _load_or_init_config(run_dir: Path, config_path: Path, cmap: list[dict], pri
     return build_default_config(cmap)
 
 
-def _edit_stats(config: dict, qkey: str, eff: dict, input_fn: InputFn, print_fn: PrintFn) -> None:
+def _edit_stats(config: dict, qkey: str, eff: dict, cmap: list[dict], input_fn: InputFn, print_fn: PrintFn) -> None:
     from .question_config import set_question_field, unset_question_field
 
     current = eff.get("stats")
@@ -243,7 +243,7 @@ def _edit_stats(config: dict, qkey: str, eff: dict, input_fn: InputFn, print_fn:
     picks = [STAT_ORDER[int(tok) - 1] for tok in raw.split(",")
              if tok.strip().isdigit() and 1 <= int(tok.strip()) <= len(STAT_ORDER)]
     if picks:
-        set_question_field(config, qkey, "stats", picks)
+        set_question_field(config, qkey, "stats", picks, column_map=cmap)
         print_fn(f"Stats set: {', '.join(picks)}")
     else:
         print_fn("No valid selection; unchanged.")
@@ -295,7 +295,7 @@ def _manage_breakouts(config: dict, qkey: str, cmap: list[dict], input_fn: Input
                 spec["orientation"] = "rows"
             if _confirm(input_fn, "Add a Total across response options?", default=False):
                 spec["response_total"] = _ask_choice(input_fn, print_fn, "Total position:", ["before", "after"], 1)
-            add_table_spec(config, qkey, spec)
+            add_table_spec(config, qkey, spec, column_map=cmap)
             print_fn("Breakout added.")
 
         elif action == "Remove a breakout":
@@ -343,11 +343,11 @@ def _edit_question(selected: dict, config: dict, cmap: list[dict], input_fn: Inp
             return
         if choice == "Include/exclude this question":
             new = _confirm(input_fn, "Include this question in the report?", default=eff.get("include", True))
-            set_question_field(config, qkey, "include", new)
+            set_question_field(config, qkey, "include", new, column_map=cmap)
         elif choice == "Sort order":
             cur = sort_by if sort_by in SORT_BY_CHOICES else "auto"
             new_sort = _ask_choice(input_fn, print_fn, "Sort by:", SORT_BY_CHOICES, SORT_BY_CHOICES.index(cur))
-            set_question_field(config, qkey, "sort_by", new_sort)
+            set_question_field(config, qkey, "sort_by", new_sort, column_map=cmap)
             if new_sort == "response_order":
                 labels = question_response_labels(cmap, qkey)
                 if labels:
@@ -357,18 +357,18 @@ def _edit_question(selected: dict, config: dict, cmap: list[dict], input_fn: Inp
                 raw = _ask(input_fn, "Codes in desired order, comma-separated",
                            ",".join(eff.get("response_order") or []))
                 order = [c.strip() for c in raw.split(",") if c.strip()]
-                set_question_field(config, qkey, "response_order", order)
+                set_question_field(config, qkey, "response_order", order, column_map=cmap)
         elif choice == "Percent base":
             cur = eff.get("percent_base", "eligible")
             cur = cur if cur in PERCENT_BASE_CHOICES else "eligible"
             new_base = _ask_choice(input_fn, print_fn, "Percent base:", PERCENT_BASE_CHOICES,
                                     PERCENT_BASE_CHOICES.index(cur))
-            set_question_field(config, qkey, "percent_base", new_base)
+            set_question_field(config, qkey, "percent_base", new_base, column_map=cmap)
         elif choice == "Show/hide response code":
             new = _confirm(input_fn, "Show the response-code column?", default=eff.get("show_code", True))
-            set_question_field(config, qkey, "show_code", new)
+            set_question_field(config, qkey, "show_code", new, column_map=cmap)
         elif choice == "Stats to display":
-            _edit_stats(config, qkey, eff, input_fn, print_fn)
+            _edit_stats(config, qkey, eff, cmap, input_fn, print_fn)
         elif choice == "Manage breakouts (grouped tables)":
             _manage_breakouts(config, qkey, cmap, input_fn, print_fn)
         elif choice == "Reset to defaults":
