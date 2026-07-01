@@ -224,3 +224,164 @@ def test_main_exits_cleanly_on_default_enter(monkeypatch):
     input_fn = FakeInput([""])  # Enter on the menu defaults to Exit
     cli.main(input_fn=input_fn, print_fn=print_fn)
     assert any("Goodbye" in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# action_configure_question
+# ---------------------------------------------------------------------------
+
+def _fixture_run_two_questions(tmp_path) -> Path:
+    """A run with two single-answer questions, so grouping/breakouts work."""
+    run_dir = tmp_path / "runs" / "SV_2"
+    run_dir.mkdir(parents=True)
+    column_map = [
+        {"survey_id": "SV_2", "qid": "QID1", "data_export_tag": "Q1", "column": "Q1",
+         "question_type": "MC", "selector": "SAVR", "question_text": "Duty location",
+         "sub_question_text": "", "response_labels": {"1": "A", "2": "B", "3": "C"},
+         "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": False, "parent_question_key": "QID1",
+         "parent_choice_code": "", "parent_choice_label": "", "text_reporting_mode": "skip"},
+        {"survey_id": "SV_2", "qid": "QID2", "data_export_tag": "Q2", "column": "Q2",
+         "question_type": "MC", "selector": "SAVR", "question_text": "Uniform type",
+         "sub_question_text": "", "response_labels": {"1": "X", "2": "Y"},
+         "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": False, "parent_question_key": "QID2",
+         "parent_choice_code": "", "parent_choice_label": "", "text_reporting_mode": "skip"},
+    ]
+    (run_dir / "column_map.json").write_text(json.dumps(column_map), encoding="utf-8")
+    (run_dir / "responses_clean.csv").write_text("Q1,Q2\n1,1\n2,1\n3,2\n", encoding="utf-8")
+    return run_dir
+
+
+def test_configure_question_sets_sort_and_percent_base(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run_dir = _fixture_run_two_questions(tmp_path)
+    cfg_path = run_dir / "cfg.json"
+    inputs = FakeInput([
+        str(run_dir),           # select run
+        str(cfg_path),          # config path (doesn't exist yet -> defaults)
+        "Q1",                   # find question by tag
+        "2",                    # menu: Sort order
+        "4",                    # sort_by choice: count_asc (auto,survey_order,count_desc,count_asc,...)
+        "3",                    # menu: Percent base
+        "3",                    # percent_base choice: total
+        "8",                    # menu: Back
+        "done",                 # finish
+    ])
+    lines, print_fn = _capture()
+    state: dict = {}
+
+    cli.action_configure_question(state, inputs, print_fn)
+
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert saved["questions"]["QID1"]["sort_by"] == "count_asc"
+    assert saved["questions"]["QID1"]["percent_base"] == "total"
+    assert any("Saved" in line for line in lines)
+    assert any("Config OK" in line for line in lines)
+
+
+def test_configure_question_add_breakout(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run_dir = _fixture_run_two_questions(tmp_path)
+    cfg_path = run_dir / "cfg.json"
+    inputs = FakeInput([
+        str(run_dir), str(cfg_path),
+        "Q1",         # configure the duty-location question
+        "6",          # menu: Manage breakouts
+        "1",          # breakouts: Add a breakout
+        "1",          # group by option 1 -> Q2 (the only other single-answer question)
+        "n",          # no Overall
+        "n",          # no transpose
+        "n",          # no response total
+        "3",          # breakouts: Back
+        "8",          # question menu: Back
+        "done",
+    ])
+    lines, print_fn = _capture()
+    state: dict = {}
+
+    cli.action_configure_question(state, inputs, print_fn)
+
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    tables = saved["questions"]["QID1"]["tables"]
+    assert tables[0] == {"group_by": []}
+    assert tables[1]["group_by"] == ["Q2"]
+
+
+def test_configure_question_stats_and_reset(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run_dir = _fixture_run_two_questions(tmp_path)
+    cfg_path = run_dir / "cfg.json"
+    inputs = FakeInput([
+        str(run_dir), str(cfg_path),
+        "Q1",
+        "5",       # menu: Stats to display
+        "1,2",     # pick n and pct
+        "7",       # menu: Reset to defaults
+        "y",       # confirm reset
+        "8",       # Back
+        "done",
+    ])
+    lines, print_fn = _capture()
+    state: dict = {}
+
+    cli.action_configure_question(state, inputs, print_fn)
+
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    # Reset removed the whole question block, including the stats we just set.
+    assert "QID1" not in saved.get("questions", {})
+
+
+def test_configure_question_ambiguous_query_disambiguates(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run_dir = tmp_path / "runs" / "SV_3"
+    run_dir.mkdir(parents=True)
+    column_map = [
+        {"survey_id": "SV_3", "qid": "QID1", "data_export_tag": "Q1", "column": "Q1",
+         "question_type": "MC", "selector": "SAVR", "question_text": "Select your location",
+         "sub_question_text": "", "response_labels": {"1": "A"},
+         "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": False, "parent_question_key": "QID1",
+         "parent_choice_code": "", "parent_choice_label": "", "text_reporting_mode": "skip"},
+        {"survey_id": "SV_3", "qid": "QID2", "data_export_tag": "Q2", "column": "Q2",
+         "question_type": "MC", "selector": "SAVR", "question_text": "Select your unit",
+         "sub_question_text": "", "response_labels": {"1": "B"},
+         "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": False, "parent_question_key": "QID2",
+         "parent_choice_code": "", "parent_choice_label": "", "text_reporting_mode": "skip"},
+    ]
+    (run_dir / "column_map.json").write_text(json.dumps(column_map), encoding="utf-8")
+    cfg_path = run_dir / "cfg.json"
+    inputs = FakeInput([
+        str(run_dir), str(cfg_path),
+        "select",   # matches both questions
+        "2",        # pick the second match (Q2)
+        "1",        # menu: Include/exclude
+        "n",        # exclude it
+        "8",        # Back
+        "done",
+    ])
+    lines, print_fn = _capture()
+    state: dict = {}
+
+    cli.action_configure_question(state, inputs, print_fn)
+
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    # Disambiguation picked the second match (QID2), not the first (QID1).
+    assert saved["questions"]["QID2"]["include"] is False
+    assert saved["questions"]["QID1"]["include"] is True  # untouched default
+
+
+def test_configure_question_no_reportable_questions(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run_dir = tmp_path / "runs" / "empty"
+    run_dir.mkdir(parents=True)
+    (run_dir / "column_map.json").write_text("[]", encoding="utf-8")
+    cfg_path = run_dir / "cfg.json"
+    inputs = FakeInput([str(run_dir), str(cfg_path)])
+    lines, print_fn = _capture()
+    state: dict = {}
+
+    cli.action_configure_question(state, inputs, print_fn)
+
+    assert any("No reportable questions" in line for line in lines)
