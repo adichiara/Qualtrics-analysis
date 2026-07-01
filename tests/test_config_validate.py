@@ -141,6 +141,26 @@ def test_stale_question_block_is_advisory_not_fatal():
     assert any("not found in column map" in m for _w, m in _warnings(issues))
 
 
+def test_underscore_keys_are_ignored_everywhere():
+    """Underscore-prefixed keys are a documentation convention (see
+    build_default_config) and must never trip the unknown-option checks, at
+    any level: top-level, defaults/question block, or table spec."""
+    config = {
+        "_reference": {"sort_by": "..."},
+        "_groupable_questions": {"Q1.9": "Uniform"},
+        "defaults": {"_note": "applies to all questions", "sort_by": "auto"},
+        "questions": {
+            "QID2": {
+                "_question": "Q1.5: Select your duty location:",
+                "_response_labels": {"1": "A"},
+                "include": True,
+                "tables": [{"_comment": "overall", "group_by": []}],
+            }
+        },
+    }
+    assert _errors(validate_config(config, _column_map())) == []
+
+
 def test_run_aborts_on_invalid_config(tmp_path):
     import json
 

@@ -44,6 +44,17 @@ KNOWN_TOP_LEVEL = {"defaults", "questions"}
 Issue = tuple[str, str, str]  # (level, location, message)
 
 
+def _is_comment_key(key: str) -> bool:
+    """Underscore-prefixed keys are documentation, ignored everywhere.
+
+    build_default_config emits keys like "_reference" and "_question" so a
+    generated config is self-explanatory when hand-edited; this convention
+    also lets a user add their own "_note" fields freely without tripping the
+    unknown-option check.
+    """
+    return str(key).startswith("_")
+
+
 def _safe_in(value: Any, allowed: set) -> bool:
     """Membership test that tolerates unhashable values (lists/dicts)."""
     try:
@@ -99,7 +110,7 @@ def _check_block(
         issues.append(("warning", w, msg))
 
     for k in block:
-        if k not in KNOWN_QUESTION_KEYS:
+        if not _is_comment_key(k) and k not in KNOWN_QUESTION_KEYS:
             err(where, f"unknown option {k!r}")
     _check_enums(block, where, issues)
 
@@ -139,6 +150,8 @@ def _check_block(
                 err(twhere, "table spec must be an object")
                 continue
             for k in spec:
+                if _is_comment_key(k):
+                    continue
                 if k in TABLE_IGNORED_KEYS:
                     warn(twhere, f"{k!r} is ignored on a table spec; set it on the question")
                 elif k not in KNOWN_TABLE_KEYS:
@@ -170,7 +183,7 @@ def validate_config(config: Any, column_map: list[dict[str, Any]]) -> list[Issue
         return [("error", "(root)", "config must be a JSON object")]
 
     for k in config:
-        if k not in KNOWN_TOP_LEVEL:
+        if not _is_comment_key(k) and k not in KNOWN_TOP_LEVEL:
             err("(root)", f"unknown top-level key {k!r} (expected: defaults, questions)")
 
     by_col = {m["column"]: m for m in column_map}
