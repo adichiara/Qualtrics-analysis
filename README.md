@@ -9,6 +9,23 @@ pip install -e .
 pip install -e '.[dev]'
 ```
 
+## Interactive menu (recommended for everyday use)
+
+Instead of chaining the module CLIs by hand, run:
+
+```bash
+qualtrics
+# or: python -m qualtrics_pipeline.cli
+```
+
+This gives a numbered menu to export a survey, initialize/validate a frequency config,
+run the analysis, regenerate the HTML report, or run the full pipeline end to end. It
+discovers existing run directories under `runs/`, remembers your last survey ID / run
+directory / config path between sessions (in `.qualtrics_cli_state.json`, gitignored),
+and offers to open `report.html` in a browser when a run finishes. It's a thin wrapper
+around the same functions the module CLIs below use, so either approach produces
+identical output — use the menu day to day and the module CLIs for scripting/automation.
+
 ## Export stage
 
 ```bash

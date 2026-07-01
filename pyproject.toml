@@ -14,6 +14,8 @@ dependencies = [
   "QualtricsAPI>=0.2",
 ]
 
+[project.scripts]
+qualtrics = "qualtrics_pipeline.cli:main"
 
 [project.optional-dependencies]
 dev = [
