@@ -125,6 +125,23 @@ def test_ensure_question_block_reuses_existing():
     assert block == {"include": False}  # not overwritten
 
 
+def test_ensure_question_block_stamps_doc_fields_when_column_map_given():
+    config = {}
+    block = qc.ensure_question_block(config, "QID2", column_map=_column_map())
+    assert block["_question"] == "Q1.5: Select your duty location:"
+    assert block["_response_labels"] == {"1": "Schofield", "2": "Fort Bragg", "3": "Other"}
+    # Engine fields are unaffected.
+    assert block["include"] is True
+    assert block["sort_by"] == "auto"
+
+
+def test_ensure_question_block_without_column_map_stays_plain():
+    config = {}
+    block = qc.ensure_question_block(config, "QID2")
+    assert "_question" not in block
+    assert block == qc.QUESTION_DEFAULT_SKELETON
+
+
 def test_effective_question_config_merges_defaults_and_overrides():
     config = {"defaults": {"sort_by": "count_desc"}, "questions": {"QID2": {"sort_by": "survey_order"}}}
     eff = qc.effective_question_config(config, "QID2")

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .frequencies import MULTI_SELECTORS, _is_analyzable, _question_key
+from .frequencies import _is_analyzable, _is_groupable, _question_doc_fields, _question_key
 from .report import _natural_question_key
 
 # Skeleton used when a question has no config block yet, matching
@@ -98,11 +98,7 @@ def groupable_columns(column_map: list[dict[str, Any]], exclude_qkey: str | None
             continue
         if exclude_qkey is not None and _question_key(m) == exclude_qkey:
             continue
-        if m.get("selector") in MULTI_SELECTORS:
-            continue
-        if m.get("is_text_entry_suffix"):
-            continue
-        if not _is_analyzable(m):
+        if not _is_groupable(m):
             continue
         seen_cols.add(col)
         out.append({
@@ -114,12 +110,23 @@ def groupable_columns(column_map: list[dict[str, Any]], exclude_qkey: str | None
     return out
 
 
-def ensure_question_block(config: dict[str, Any], qkey: str) -> dict[str, Any]:
+def ensure_question_block(
+    config: dict[str, Any], qkey: str, column_map: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Return config["questions"][qkey], creating it (with the standard
-    skeleton) if this is the first customization for that question."""
+    skeleton) if this is the first customization for that question.
+
+    When ``column_map`` is given, the new block is stamped with the same
+    underscore-prefixed documentation fields build_default_config emits (which
+    question this is, its response codes), so a config touched through the
+    interactive menu stays just as self-explanatory to hand-edit afterward.
+    """
     config.setdefault("questions", {})
     if qkey not in config["questions"]:
-        config["questions"][qkey] = dict(QUESTION_DEFAULT_SKELETON)
+        block = dict(QUESTION_DEFAULT_SKELETON)
+        if column_map is not None:
+            block = {**_question_doc_fields(column_map, qkey), **block}
+        config["questions"][qkey] = block
     return config["questions"][qkey]
 
 
@@ -130,8 +137,10 @@ def effective_question_config(config: dict[str, Any], qkey: str) -> dict[str, An
     return merged
 
 
-def set_question_field(config: dict[str, Any], qkey: str, field: str, value: Any) -> None:
-    ensure_question_block(config, qkey)[field] = value
+def set_question_field(
+    config: dict[str, Any], qkey: str, field: str, value: Any, column_map: list[dict[str, Any]] | None = None
+) -> None:
+    ensure_question_block(config, qkey, column_map)[field] = value
 
 
 def unset_question_field(config: dict[str, Any], qkey: str, field: str) -> None:
@@ -152,9 +161,11 @@ def list_table_specs(config: dict[str, Any], qkey: str) -> list[dict[str, Any]]:
     return tables if tables else [{"group_by": []}]
 
 
-def add_table_spec(config: dict[str, Any], qkey: str, spec: dict[str, Any]) -> None:
+def add_table_spec(
+    config: dict[str, Any], qkey: str, spec: dict[str, Any], column_map: list[dict[str, Any]] | None = None
+) -> None:
     """Append a breakout, preserving the implicit overall table if present."""
-    block = ensure_question_block(config, qkey)
+    block = ensure_question_block(config, qkey, column_map)
     tables = block.get("tables")
     if not tables:
         tables = [{"group_by": []}]

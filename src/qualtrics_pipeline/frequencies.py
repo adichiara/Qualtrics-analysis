@@ -61,6 +61,7 @@ def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
         qid = _question_key(m)
         if qid not in questions:
             questions[qid] = {
+                **_question_doc_fields(column_map, qid),
                 "include": True,
                 "sort_by": "auto",
                 "percent_base": "eligible",
@@ -71,7 +72,12 @@ def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
             questions[qid]["text_entry_columns"][m["column"]] = {
                 "text_reporting_mode": m.get("text_reporting_mode", "summarize_later")
             }
-    return {"defaults": {"sort_by": "auto"}, "questions": questions}
+    return {
+        "_reference": _config_reference(),
+        "_groupable_questions": _groupable_questions_doc(column_map),
+        "defaults": {"sort_by": "auto"},
+        "questions": questions,
+    }
 
 
 def _question_looks_like(column: str) -> bool:
@@ -174,6 +180,71 @@ PRESENTATION_DEFAULTS = {
     "response_total": False,    # False | "before" | "after"
     "stats": None,              # None -> renderer default
 }
+
+
+def _is_groupable(mapping: dict[str, Any]) -> bool:
+    """Whether a column can be used as a breakout ("group_by") variable."""
+    return (
+        _is_analyzable(mapping)
+        and mapping.get("selector") not in MULTI_SELECTORS
+        and not mapping.get("is_text_entry_suffix")
+    )
+
+
+def _question_doc_fields(column_map: list[dict[str, Any]], qkey: str) -> dict[str, Any]:
+    """Underscore-prefixed, engine-ignored fields describing a question.
+
+    Generated configs are meant to be hand-edited; these make a question's
+    block self-explanatory (which question it is, what its response codes
+    mean) without cross-referencing codebook.csv. The engine and the config
+    validator both ignore any key starting with "_".
+    """
+    tag = qkey
+    text = ""
+    labels: dict[str, str] = {}
+    for m in column_map:
+        if _question_key(m) != qkey:
+            continue
+        tag = m.get("data_export_tag") or tag
+        text = text or m.get("question_text", "")
+        for code, label in (m.get("response_labels") or {}).items():
+            labels.setdefault(code, label)
+    doc: dict[str, Any] = {"_question": f"{tag}: {text}" if text else tag}
+    if labels:
+        doc["_response_labels"] = labels
+    return doc
+
+
+def _groupable_questions_doc(column_map: list[dict[str, Any]]) -> dict[str, str]:
+    """{tag: question_text} reference for valid group_by values, in survey order."""
+    out: dict[str, str] = {}
+    for m in column_map:
+        if not _is_groupable(m):
+            continue
+        tag = m.get("data_export_tag") or m["column"]
+        out.setdefault(tag, m.get("question_text", ""))
+    return out
+
+
+def _config_reference() -> dict[str, str]:
+    """One-line cheat sheet for every configurable field, embedded in generated
+    configs so hand-editing doesn't require looking up the README."""
+    sort_opts = "|".join(["auto", *sorted(SORT_BY_VALUES)])
+    pct_opts = "|".join(sorted(PERCENT_BASES))
+    stat_opts = ", ".join(sorted(STAT_KEYS))
+    return {
+        "include": "true|false - include this question in the report",
+        "sort_by": f"{sort_opts} - response ordering; response_order also needs the response_order list below",
+        "response_order": "list of response codes in the order to display them (used when sort_by is response_order)",
+        "percent_base": f"{pct_opts} - featured denominator (valid=answered, eligible=shown per display logic, total=all respondents)",
+        "show_code": "true|false - show the response-code column in the report",
+        "stats": f"list from: {stat_opts} (omit/empty = report default)",
+        "tables": (
+            "list of breakout tables, e.g. [{\"group_by\": [\"Q1.9\"], \"orientation\": \"columns\", "
+            "\"overall\": false, \"response_total\": false}]. Omit for a single overall table. "
+            "See _groupable_questions below for valid group_by tags."
+        ),
+    }
 
 
 def _resolve_presentation(cfg: dict, spec: dict) -> dict:
