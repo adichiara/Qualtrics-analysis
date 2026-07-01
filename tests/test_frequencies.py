@@ -236,6 +236,62 @@ def test_build_default_config_emits_sort_by() -> None:
     assert "frequency_mode" not in cfg["defaults"]
 
 
+def test_build_default_config_is_self_documenting() -> None:
+    column_map = [
+        {
+            "survey_id": "SV_1", "qid": "QID2", "data_export_tag": "Q1.5",
+            "column": "Q1.5", "question_type": "MC", "selector": "SAVR",
+            "question_text": "Select your duty location:", "sub_question_text": "",
+            "response_labels": {"1": "Schofield Barracks", "2": "Fort Bragg"},
+            "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+            "is_text_entry_suffix": False, "parent_question_key": "QID2",
+            "parent_choice_code": "", "parent_choice_label": "",
+            "text_reporting_mode": "skip",
+        }
+    ]
+    cfg = build_default_config(column_map)
+
+    # Top-level cheat sheet and grouping reference are present.
+    assert "sort_by" in cfg["_reference"]
+    assert "percent_base" in cfg["_reference"]
+    assert cfg["_groupable_questions"] == {"Q1.5": "Select your duty location:"}
+
+    # Each question block identifies itself and its response codes for
+    # hand-editing, without needing to cross-reference codebook.csv.
+    q = cfg["questions"]["QID2"]
+    assert q["_question"] == "Q1.5: Select your duty location:"
+    assert q["_response_labels"] == {"1": "Schofield Barracks", "2": "Fort Bragg"}
+    # Real engine fields are unaffected.
+    assert q["include"] is True
+    assert q["sort_by"] == "auto"
+
+
+def test_config_reference_stats_match_stat_keys() -> None:
+    from qualtrics_pipeline.frequencies import STAT_KEYS, _config_reference
+
+    ref = _config_reference()
+    for key in STAT_KEYS:
+        assert key in ref["stats"]
+
+
+def test_groupable_questions_doc_excludes_multiselect_and_text_entry() -> None:
+    from qualtrics_pipeline.frequencies import _groupable_questions_doc
+
+    column_map = [
+        {"qid": "QID1", "data_export_tag": "Q1", "column": "Q1", "question_text": "Single",
+         "selector": "SAVR", "is_metadata": False, "is_sensitive": False, "is_open_text": False,
+         "is_text_entry_suffix": False},
+        {"qid": "QID2", "data_export_tag": "Q2", "column": "Q2_1", "question_text": "Multi",
+         "selector": "MAVR", "is_metadata": False, "is_sensitive": False, "is_open_text": False,
+         "is_text_entry_suffix": False},
+        {"qid": "QID1", "data_export_tag": "Q1", "column": "Q1_1_TEXT", "question_text": "Single",
+         "selector": "SAVR", "is_metadata": False, "is_sensitive": False, "is_open_text": True,
+         "is_text_entry_suffix": True},
+    ]
+    doc = _groupable_questions_doc(column_map)
+    assert doc == {"Q1": "Single"}
+
+
 # ---------------------------------------------------------------------------
 # Display-logic base_n tests
 # ---------------------------------------------------------------------------
