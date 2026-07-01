@@ -26,6 +26,18 @@ and offers to open `report.html` in a browser when a run finishes. It's a thin w
 around the same functions the module CLIs below use, so either approach produces
 identical output — use the menu day to day and the module CLIs for scripting/automation.
 
+### Configuring a question's reporting options from the menu
+
+"Configure question reporting options" lets you set a question's `sort_by`,
+`percent_base`, `show_code`, `stats`, and grouped-table breakouts without hand-writing
+JSON. Find a question by typing its number, its tag (e.g. `Q1.5`), or part of its
+question text (an ambiguous search shows the matches to pick from); then walk through
+its settings, add/remove breakouts by picking a grouping question from a list (only
+single-answer questions are offered, and the question you're editing is excluded from
+its own list), and choose whether to add an Overall column/row, transpose group levels
+to rows, or add a Total across response options. Changes are written to the config file
+when you type `done`, and the config is validated immediately afterward.
+
 ## Export stage
 
 ```bash

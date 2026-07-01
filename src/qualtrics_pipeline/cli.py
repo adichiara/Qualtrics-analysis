@@ -202,6 +202,236 @@ def action_init_config(state: dict, input_fn: InputFn, print_fn: PrintFn) -> Pat
     return config_path
 
 
+def _truncate(text: str, width: int) -> str:
+    text = text or ""
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+SORT_BY_CHOICES = ["auto", "survey_order", "count_desc", "count_asc", "response_order"]
+PERCENT_BASE_CHOICES = ["eligible", "valid", "total"]
+STAT_ORDER = ["n", "pct", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "base_n"]
+STAT_LABELS = {
+    "n": "n (count)", "pct": "% (featured base)", "valid_n": "Valid n", "valid_pct": "Valid %",
+    "eligible_n": "Eligible n", "eligible_pct": "Eligible %", "total_n": "Total n",
+    "total_pct": "Total %", "base_n": "n (featured base)",
+}
+
+
+def _load_or_init_config(run_dir: Path, config_path: Path, cmap: list[dict], print_fn: PrintFn) -> dict:
+    if config_path.exists():
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    from .frequencies import build_default_config
+
+    print_fn(f"{config_path} does not exist; starting from defaults (not written until you save).")
+    return build_default_config(cmap)
+
+
+def _edit_stats(config: dict, qkey: str, eff: dict, input_fn: InputFn, print_fn: PrintFn) -> None:
+    from .question_config import set_question_field, unset_question_field
+
+    current = eff.get("stats")
+    print_fn("Available stats (current marked *):")
+    for i, key in enumerate(STAT_ORDER, 1):
+        mark = " *" if current and key in current else ""
+        print_fn(f"  {i}. {STAT_LABELS[key]}{mark}")
+    default_raw = ",".join(str(STAT_ORDER.index(s) + 1) for s in current if s in STAT_ORDER) if current else ""
+    raw = _ask(input_fn, "Numbers comma-separated (blank = use report default)", default_raw)
+    if not raw.strip():
+        unset_question_field(config, qkey, "stats")
+        print_fn("Using report default stats.")
+        return
+    picks = [STAT_ORDER[int(tok) - 1] for tok in raw.split(",")
+             if tok.strip().isdigit() and 1 <= int(tok.strip()) <= len(STAT_ORDER)]
+    if picks:
+        set_question_field(config, qkey, "stats", picks)
+        print_fn(f"Stats set: {', '.join(picks)}")
+    else:
+        print_fn("No valid selection; unchanged.")
+
+
+def _manage_breakouts(config: dict, qkey: str, cmap: list[dict], input_fn: InputFn, print_fn: PrintFn) -> None:
+    from .question_config import add_table_spec, groupable_columns, list_table_specs, remove_table_spec
+
+    while True:
+        tables = list_table_specs(config, qkey)
+        print_fn("\nTables for this question:")
+        for i, t in enumerate(tables):
+            gb = t.get("group_by") or []
+            label = "Overall (ungrouped)" if not gb else f"By {', '.join(gb)}"
+            extra = []
+            if t.get("orientation") == "rows":
+                extra.append("groups as rows")
+            if t.get("overall"):
+                extra.append(f"+Overall ({t['overall']})")
+            if t.get("response_total"):
+                extra.append(f"+Total ({t['response_total']})")
+            if extra:
+                label += f" [{', '.join(extra)}]"
+            print_fn(f"  [{i}] {label}")
+
+        action = _ask_choice(input_fn, print_fn, "Breakouts:",
+                              ["Add a breakout", "Remove a breakout", "Back"], default_index=2)
+        if action == "Back":
+            return
+
+        if action == "Add a breakout":
+            options = groupable_columns(cmap, exclude_qkey=qkey)
+            if not options:
+                print_fn("No single-answer questions available to group by.")
+                continue
+            print_fn("Group by which question(s)? (comma-separated numbers for more than one)")
+            for i, o in enumerate(options, 1):
+                print_fn(f"  {i}. {o['question_id']}: {_truncate(o['question_text'], 60)}")
+            raw = input_fn("> ").strip()
+            picks = [options[int(tok) - 1]["column"] for tok in raw.split(",")
+                     if tok.strip().isdigit() and 1 <= int(tok.strip()) <= len(options)]
+            if not picks:
+                print_fn("No valid selection; nothing added.")
+                continue
+            spec: dict = {"group_by": picks}
+            if _confirm(input_fn, "Add an Overall column/row alongside the groups?", default=False):
+                spec["overall"] = _ask_choice(input_fn, print_fn, "Overall position:", ["before", "after"], 1)
+            if _confirm(input_fn, "Transpose: show groups as rows instead of columns?", default=False):
+                spec["orientation"] = "rows"
+            if _confirm(input_fn, "Add a Total across response options?", default=False):
+                spec["response_total"] = _ask_choice(input_fn, print_fn, "Total position:", ["before", "after"], 1)
+            add_table_spec(config, qkey, spec)
+            print_fn("Breakout added.")
+
+        elif action == "Remove a breakout":
+            raw = _ask(input_fn, "Index to remove (see [n] above)")
+            if raw.isdigit() and remove_table_spec(config, qkey, int(raw)):
+                print_fn("Removed.")
+            else:
+                print_fn("Nothing removed.")
+
+
+def _edit_question(selected: dict, config: dict, cmap: list[dict], input_fn: InputFn, print_fn: PrintFn) -> None:
+    from .question_config import (
+        effective_question_config,
+        list_table_specs,
+        question_response_labels,
+        reset_question,
+        set_question_field,
+    )
+
+    qkey = selected["qkey"]
+    while True:
+        eff = effective_question_config(config, qkey)
+        tables = list_table_specs(config, qkey)
+        print_fn(f"\n--- {selected['question_id']}: {_truncate(selected['question_text'], 70)} ---")
+        print_fn(f"  include: {eff.get('include', True)}")
+        sort_by = eff.get("sort_by", "auto")
+        order_note = f" (order: {eff.get('response_order')})" if sort_by == "response_order" else ""
+        print_fn(f"  sort_by: {sort_by}{order_note}")
+        print_fn(f"  percent_base: {eff.get('percent_base', 'eligible')}")
+        print_fn(f"  show_code: {eff.get('show_code', True)}")
+        print_fn(f"  stats: {eff.get('stats') or '(report default)'}")
+        print_fn(f"  tables: {len(tables)}")
+        for i, t in enumerate(tables):
+            gb = t.get("group_by") or []
+            print_fn(f"    [{i}] {'Overall' if not gb else 'By ' + ', '.join(gb)}")
+
+        options = [
+            "Include/exclude this question", "Sort order", "Percent base",
+            "Show/hide response code", "Stats to display", "Manage breakouts (grouped tables)",
+            "Reset to defaults", "Back",
+        ]
+        choice = _ask_choice(input_fn, print_fn, "Edit:", options, default_index=len(options) - 1)
+
+        if choice == "Back":
+            return
+        if choice == "Include/exclude this question":
+            new = _confirm(input_fn, "Include this question in the report?", default=eff.get("include", True))
+            set_question_field(config, qkey, "include", new)
+        elif choice == "Sort order":
+            cur = sort_by if sort_by in SORT_BY_CHOICES else "auto"
+            new_sort = _ask_choice(input_fn, print_fn, "Sort by:", SORT_BY_CHOICES, SORT_BY_CHOICES.index(cur))
+            set_question_field(config, qkey, "sort_by", new_sort)
+            if new_sort == "response_order":
+                labels = question_response_labels(cmap, qkey)
+                if labels:
+                    print_fn("Available codes:")
+                    for code, label in labels.items():
+                        print_fn(f"  {code}: {label}")
+                raw = _ask(input_fn, "Codes in desired order, comma-separated",
+                           ",".join(eff.get("response_order") or []))
+                order = [c.strip() for c in raw.split(",") if c.strip()]
+                set_question_field(config, qkey, "response_order", order)
+        elif choice == "Percent base":
+            cur = eff.get("percent_base", "eligible")
+            cur = cur if cur in PERCENT_BASE_CHOICES else "eligible"
+            new_base = _ask_choice(input_fn, print_fn, "Percent base:", PERCENT_BASE_CHOICES,
+                                    PERCENT_BASE_CHOICES.index(cur))
+            set_question_field(config, qkey, "percent_base", new_base)
+        elif choice == "Show/hide response code":
+            new = _confirm(input_fn, "Show the response-code column?", default=eff.get("show_code", True))
+            set_question_field(config, qkey, "show_code", new)
+        elif choice == "Stats to display":
+            _edit_stats(config, qkey, eff, input_fn, print_fn)
+        elif choice == "Manage breakouts (grouped tables)":
+            _manage_breakouts(config, qkey, cmap, input_fn, print_fn)
+        elif choice == "Reset to defaults":
+            if _confirm(input_fn, "Remove all custom settings for this question?", default=False):
+                reset_question(config, qkey)
+                print_fn("Reset.")
+
+
+def action_configure_question(state: dict, input_fn: InputFn, print_fn: PrintFn) -> None:
+    from .config_validate import format_issues, validate_config
+    from .question_config import find_questions, question_summaries
+
+    run_dir = _select_run(state, input_fn, print_fn)
+    if run_dir is None:
+        return
+    column_map_path = run_dir / "column_map.json"
+    if not column_map_path.exists():
+        print_fn(f"No column_map.json found in {run_dir}")
+        return
+    cmap = json.loads(column_map_path.read_text(encoding="utf-8"))
+
+    config_path = Path(_ask(input_fn, "Config path", state.get("last_config_path") or str(default_config_path(run_dir))))
+    config = _load_or_init_config(run_dir, config_path, cmap, print_fn)
+
+    summaries = question_summaries(cmap)
+    if not summaries:
+        print_fn("No reportable questions found in this column map.")
+        return
+
+    print_fn(f"\n{len(summaries)} question(s). Type a number, a tag (e.g. Q1.5), part of the "
+              "question text, or 'done' to save and exit.")
+    for i, s in enumerate(summaries, 1):
+        print_fn(f"  {i}. {s['question_id']}: {_truncate(s['question_text'], 65)}")
+
+    while True:
+        query = input_fn("\nQuestion (or 'done'): ").strip()
+        if not query or query.lower() in ("done", "exit", "q"):
+            break
+        matches = find_questions(summaries, query)
+        if not matches:
+            print_fn("No matching question. Try again, or type 'done' to finish.")
+            continue
+        if len(matches) > 1:
+            print_fn(f"{len(matches)} matches:")
+            for i, s in enumerate(matches, 1):
+                print_fn(f"  {i}. {s['question_id']}: {_truncate(s['question_text'], 65)}")
+            sub = input_fn("Pick a number, or Enter to cancel: ").strip()
+            if not sub.isdigit() or not (1 <= int(sub) <= len(matches)):
+                continue
+            selected = matches[int(sub) - 1]
+        else:
+            selected = matches[0]
+        _edit_question(selected, config, cmap, input_fn, print_fn)
+
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    print_fn(f"Saved {config_path}")
+    state.update(last_run_dir=str(run_dir), last_config_path=str(config_path))
+    save_state(state)
+
+    issues = validate_config(config, cmap)
+    print_fn(format_issues(issues) if issues else "Config OK: no issues found.")
+
+
 def action_validate_config(state: dict, input_fn: InputFn, print_fn: PrintFn) -> None:
     from .config_validate import format_issues, validate_config
 
@@ -339,6 +569,7 @@ def action_show_status(state: dict, input_fn: InputFn, print_fn: PrintFn) -> Non
 MENU = [
     ("Export survey from Qualtrics", action_export),
     ("Initialize / update frequency config for a run", action_init_config),
+    ("Configure question reporting options", action_configure_question),
     ("Validate config", action_validate_config),
     ("Run frequency analysis + report", action_run_analysis),
     ("Regenerate HTML report only", action_regenerate_report),
