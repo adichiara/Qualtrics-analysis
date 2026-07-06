@@ -18,17 +18,26 @@ qualtrics
 # or: python -m qualtrics_pipeline.cli
 ```
 
-This gives a numbered menu to export a survey, initialize/validate a frequency config,
-run the analysis, regenerate the HTML report, or run the full pipeline end to end. It
-discovers existing run directories under `runs/`, remembers your last survey ID / run
-directory / config path between sessions (in `.qualtrics_cli_state.json`, gitignored),
-and offers to open `report.html` in a browser when a run finishes. It's a thin wrapper
-around the same functions the module CLIs below use, so either approach produces
-identical output — use the menu day to day and the module CLIs for scripting/automation.
+This gives a numbered menu to export a survey, initialize a frequency config, edit or
+validate it, run the analysis, regenerate the HTML report, or run the full pipeline end
+to end. It discovers existing run directories under `runs/`, remembers your last survey
+ID / run directory / config path between sessions (in `.qualtrics_cli_state.json`,
+gitignored), and offers to open `report.html` in a browser when a run finishes. It's a
+thin wrapper around the same functions the module CLIs below use, so either approach
+produces identical output — use the menu day to day and the module CLIs for
+scripting/automation.
 
-### Configuring a question's reporting options from the menu
+### Editing the config from the menu
 
-"Configure question reporting options" lets you set a question's `sort_by`,
+"Edit config file" is the recommended day-to-day path: it initializes the config if
+missing, opens it in `$EDITOR` (or `$VISUAL`, falling back to `vi`), and validates it
+the moment you save and quit. Because `--init-config` writes a self-documenting config
+(see "Self-documenting config" below), hand-editing the JSON is usually faster than
+clicking through a menu once you know the field names — this matters most when sweeping
+changes across many questions at once.
+
+"Configure a single question (guided menu)" is still available for one-off tweaks or
+when you'd rather not touch raw JSON. It lets you set a question's `sort_by`,
 `percent_base`, `show_code`, `stats`, and grouped-table breakouts without hand-writing
 JSON. Find a question by typing its number, its tag (e.g. `Q1.5`), or part of its
 question text (an ambiguous search shows the matches to pick from); then walk through
@@ -37,9 +46,6 @@ single-answer questions are offered, and the question you're editing is excluded
 its own list), and choose whether to add an Overall column/row, transpose group levels
 to rows, or add a Total across response options. Changes are written to the config file
 when you type `done`, and the config is validated immediately afterward.
-
-For sweeping through many questions at once, hand-editing the generated config file
-directly is often faster than the menu — see "Self-documenting config" below.
 
 ### Self-documenting config
 
