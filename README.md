@@ -67,6 +67,29 @@ ignore everywhere (top level, a question's block, or a table spec) — they're p
 documentation with no effect on the report. You can add your own `_note`-style keys
 too; anything starting with `_` is always allowed.
 
+### Showing only specific questions (`only`)
+
+By default every analyzable question is included in the report; the per-question
+`include: false` option is a *blacklist* — set it to hide specific questions, one at a
+time. To do the opposite — show only a handful of questions instead of hand-editing
+`include: false` onto everything else — set a top-level `only` list:
+
+```jsonc
+{
+  "only": ["Q1.5", "Q2.1"],
+  "defaults": { "sort_by": "auto" },
+  "questions": { ... }
+}
+```
+
+`only` accepts question tags (as shown in `_groupable_questions`/`_question`) or the
+internal question key (the string used as the key under `"questions"`, e.g. `"QID2"`) —
+either works. When present, every question not in the list is hidden regardless of its
+own `include` value; an explicit `include: false` still excludes a question even if it's
+also listed in `only`. Omit `only` (the default) to include everything, as before.
+
+## Export stage
+
 ```bash
 python -m qualtrics_pipeline.export --survey-id SV_123 --outdir runs/example
 ```

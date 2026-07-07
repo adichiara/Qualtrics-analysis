@@ -39,7 +39,7 @@ TABLE_IGNORED_KEYS = {
     "tables", "text_entry_columns",
 }
 
-KNOWN_TOP_LEVEL = {"defaults", "questions"}
+KNOWN_TOP_LEVEL = {"defaults", "questions", "only"}
 
 Issue = tuple[str, str, str]  # (level, location, message)
 
@@ -184,11 +184,29 @@ def validate_config(config: Any, column_map: list[dict[str, Any]]) -> list[Issue
 
     for k in config:
         if not _is_comment_key(k) and k not in KNOWN_TOP_LEVEL:
-            err("(root)", f"unknown top-level key {k!r} (expected: defaults, questions)")
+            err("(root)", f"unknown top-level key {k!r} (expected: defaults, questions, only)")
 
     by_col = {m["column"]: m for m in column_map}
     valid_qkeys = {_question_key(m) for m in column_map}
+    valid_tags = {m.get("data_export_tag") for m in column_map if m.get("data_export_tag")}
     groupable = {c for c, m in by_col.items() if m.get("selector") not in MULTI_SELECTORS}
+
+    only = config.get("only")
+    if only is not None:
+        if not isinstance(only, list):
+            err("only", "must be a list")
+        elif not only:
+            warn("only", "empty list is treated as no restriction (every question is shown)")
+        else:
+            any_valid = False
+            for entry in only:
+                e = str(entry)
+                if e in valid_qkeys or e in valid_tags:
+                    any_valid = True
+                else:
+                    warn("only", f"entry {e!r} not found in column map (tag or question key); it will be ignored")
+            if not any_valid:
+                warn("only", "no entries resolved to a real question; the report would show nothing")
 
     defaults = config.get("defaults", {})
     if not isinstance(defaults, dict):
