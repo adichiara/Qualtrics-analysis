@@ -161,6 +161,35 @@ def test_underscore_keys_are_ignored_everywhere():
     assert _errors(validate_config(config, _column_map())) == []
 
 
+def test_only_valid_entries_have_no_issues():
+    config = {"only": ["Q1.5", "QID16"], "defaults": {}, "questions": {}}
+    assert validate_config(config, _column_map()) == []
+
+
+def test_only_must_be_a_list():
+    config = {"only": "Q1.5"}
+    errs = _errors(validate_config(config, _column_map()))
+    assert any("only" in w and "must be a list" in m for w, m in errs)
+
+
+def test_only_unresolvable_entry_warns():
+    config = {"only": ["Q1.5", "NoSuchTag"]}
+    warns = _warnings(validate_config(config, _column_map()))
+    assert any("NoSuchTag" in m and "not found" in m for _w, m in warns)
+
+
+def test_only_all_unresolvable_warns_report_empty():
+    config = {"only": ["NoSuchTag"]}
+    warns = _warnings(validate_config(config, _column_map()))
+    assert any("show nothing" in m for _w, m in warns)
+
+
+def test_only_empty_list_warns_as_no_restriction():
+    config = {"only": []}
+    warns = _warnings(validate_config(config, _column_map()))
+    assert any("no restriction" in m for _w, m in warns)
+
+
 def test_run_aborts_on_invalid_config(tmp_path):
     import json
 

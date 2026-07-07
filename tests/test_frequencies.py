@@ -524,3 +524,153 @@ def test_no_tables_key_defaults_to_overall_only() -> None:
     tables, _, _ = generate_frequency_tables(rows, column_map, config)
     assert "QID_Q" in tables
     assert not any("__by__" in k for k in tables)
+
+
+# ---------------------------------------------------------------------------
+# Top-level "only" whitelist
+# ---------------------------------------------------------------------------
+
+def _two_question_setup():
+    rows = [{"Q1": "1", "Q2": "1"}, {"Q1": "2", "Q2": "2"}]
+    column_map = [
+        {"survey_id": "SV_1", "qid": "QIDA", "data_export_tag": "Q1", "column": "Q1",
+         "question_type": "MC", "selector": "SAVR", "question_text": "First",
+         "sub_question_text": "", "response_labels": {"1": "A", "2": "B"},
+         "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": False, "parent_question_key": "QIDA",
+         "parent_choice_code": "", "parent_choice_label": "", "text_reporting_mode": "skip"},
+        {"survey_id": "SV_1", "qid": "QIDB", "data_export_tag": "Q2", "column": "Q2",
+         "question_type": "MC", "selector": "SAVR", "question_text": "Second",
+         "sub_question_text": "", "response_labels": {"1": "X", "2": "Y"},
+         "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": False, "parent_question_key": "QIDB",
+         "parent_choice_code": "", "parent_choice_label": "", "text_reporting_mode": "skip"},
+    ]
+    return rows, column_map
+
+
+def test_only_by_tag_shows_just_that_question() -> None:
+    """The scenario from the bug report: editing the config down to one
+    question's worth of settings must actually hide every other question,
+    not just leave them defaulted to shown."""
+    rows, column_map = _two_question_setup()
+    config = {"only": ["Q1"], "defaults": {}, "questions": {}}
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
+    assert "QIDA" in tables
+    assert "QIDB" not in tables
+
+
+def test_only_by_qkey_also_works() -> None:
+    rows, column_map = _two_question_setup()
+    config = {"only": ["QIDB"], "defaults": {}, "questions": {}}
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
+    assert "QIDB" in tables
+    assert "QIDA" not in tables
+
+
+def test_only_absent_shows_everything() -> None:
+    rows, column_map = _two_question_setup()
+    config = {"defaults": {}, "questions": {}}
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
+    assert "QIDA" in tables
+    assert "QIDB" in tables
+
+
+def test_only_and_include_false_combine() -> None:
+    """include: false still excludes a question even if it's in "only"."""
+    rows, column_map = _two_question_setup()
+    config = {"only": ["Q1", "Q2"], "defaults": {}, "questions": {"QIDA": {"include": False}}}
+    tables, _, _ = generate_frequency_tables(rows, column_map, config)
+    assert "QIDA" not in tables
+    assert "QIDB" in tables
+
+
+def test_config_reference_documents_only() -> None:
+    from qualtrics_pipeline.frequencies import _config_reference
+
+    assert "only" in _config_reference()
+
+
+def test_only_also_hides_write_in_outputs() -> None:
+    """A question excluded by "only" must not leak its write-in (open-text)
+    responses either -- otherwise it still surfaces as an orphan section in
+    the report (Codex review, PR #9)."""
+    rows = [
+        {"Q1": "1", "Q1_TEXT": ""},
+        {"Q1": "3", "Q1_TEXT": "Some other duty station"},
+    ]
+    column_map = [
+        {"survey_id": "SV_1", "qid": "QIDA", "data_export_tag": "Q1", "column": "Q1",
+         "question_type": "MC", "selector": "SAVR", "question_text": "First",
+         "sub_question_text": "", "response_labels": {"1": "A", "3": "Other"},
+         "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": False, "parent_question_key": "QIDA",
+         "parent_choice_code": "", "parent_choice_label": "", "text_reporting_mode": "skip"},
+        {"survey_id": "SV_1", "qid": "QIDA", "data_export_tag": "Q1", "column": "Q1_TEXT",
+         "question_type": "MC", "selector": "SAVR", "question_text": "First",
+         "sub_question_text": "Other", "response_labels": {},
+         "is_open_text": True, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": True, "parent_question_key": "QIDA",
+         "parent_choice_code": "3", "parent_choice_label": "Other",
+         "text_reporting_mode": "summarize_later"},
+    ]
+    config = {"only": ["NoSuchTag"], "defaults": {}, "questions": {}}  # excludes QIDA entirely
+    tables, text_outputs, _ = generate_frequency_tables(rows, column_map, config)
+    assert "QIDA" not in tables
+    assert "QIDA" not in text_outputs
+
+
+def test_only_include_false_also_hides_write_in_outputs() -> None:
+    """Same guarantee via a plain include: false (not just "only")."""
+    rows = [{"Q1": "3", "Q1_TEXT": "Camp Zama"}]
+    column_map = [
+        {"survey_id": "SV_1", "qid": "QIDA", "data_export_tag": "Q1", "column": "Q1",
+         "question_type": "MC", "selector": "SAVR", "question_text": "First",
+         "sub_question_text": "", "response_labels": {"3": "Other"},
+         "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": False, "parent_question_key": "QIDA",
+         "parent_choice_code": "", "parent_choice_label": "", "text_reporting_mode": "skip"},
+        {"survey_id": "SV_1", "qid": "QIDA", "data_export_tag": "Q1", "column": "Q1_TEXT",
+         "question_type": "MC", "selector": "SAVR", "question_text": "First",
+         "sub_question_text": "Other", "response_labels": {},
+         "is_open_text": True, "is_metadata": False, "is_sensitive": False,
+         "is_text_entry_suffix": True, "parent_question_key": "QIDA",
+         "parent_choice_code": "3", "parent_choice_label": "Other",
+         "text_reporting_mode": "summarize_later"},
+    ]
+    config = {"defaults": {}, "questions": {"QIDA": {"include": False}}}
+    _, text_outputs, _ = generate_frequency_tables(rows, column_map, config)
+    assert "QIDA" not in text_outputs
+
+
+def test_rerun_with_narrower_only_clears_stale_output_files(tmp_path) -> None:
+    """Re-running analysis in the same outdir after tightening "only" must not
+    leave a previously-written question's frequency_tables/*.csv (or
+    open_text_outputs/*.csv) behind -- the report globs the whole directory,
+    so stale files would make an excluded question reappear (Codex review,
+    PR #9)."""
+    rows, column_map = _two_question_setup()
+    data_path = tmp_path / "data.csv"
+    data_path.write_text("Q1,Q2\n1,1\n2,2\n", encoding="utf-8")
+    cmap_path = tmp_path / "cm.json"
+    cmap_path.write_text(json.dumps(column_map), encoding="utf-8")
+    outdir = tmp_path / "out"
+
+    # First run: unrestricted, both questions get a file.
+    config_path = tmp_path / "cfg.json"
+    config_path.write_text(json.dumps({"defaults": {}, "questions": {}}), encoding="utf-8")
+    run_frequency_analysis(data_path, cmap_path, outdir, config_path)
+    freq_dir = outdir / "frequency_tables"
+    assert (freq_dir / "QIDA_frequencies.csv").exists()
+    assert (freq_dir / "QIDB_frequencies.csv").exists()
+
+    # Second run in the SAME outdir: narrowed to only QIDA.
+    config_path.write_text(json.dumps({"only": ["Q1"], "defaults": {}, "questions": {}}), encoding="utf-8")
+    run_frequency_analysis(data_path, cmap_path, outdir, config_path)
+    assert (freq_dir / "QIDA_frequencies.csv").exists()
+    assert not (freq_dir / "QIDB_frequencies.csv").exists()  # stale file removed
+
+    from qualtrics_pipeline.report import generate_html_report
+
+    html = generate_html_report(outdir).read_text(encoding="utf-8")
+    assert html.count("<section") == 1  # only QIDA's section, no stale QIDB
