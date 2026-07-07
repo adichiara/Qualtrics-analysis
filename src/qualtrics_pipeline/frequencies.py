@@ -53,6 +53,27 @@ def _question_key(mapping: dict[str, Any]) -> str:
     return mapping.get("qid") or mapping.get("data_export_tag") or mapping["column"]
 
 
+def _resolve_only(column_map: list[dict[str, Any]], only_list: Any) -> set[str] | None:
+    """Resolve a top-level "only" list (question tags or qkeys) to qkeys.
+
+    Returns None when "only" is absent/empty, meaning no restriction (the
+    default: every analyzable question is included unless individually
+    excluded via include: false). When set, every question NOT resolved from
+    this list is hidden from the report regardless of its own include value --
+    this is the whitelist counterpart to the per-question include flag.
+    """
+    if not only_list:
+        return None
+    lookup: dict[str, str] = {}
+    for m in column_map:
+        qk = _question_key(m)
+        lookup.setdefault(qk, qk)
+        tag = m.get("data_export_tag")
+        if tag:
+            lookup.setdefault(tag, qk)
+    return {lookup.get(str(entry), str(entry)) for entry in only_list}
+
+
 def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
     questions: dict[str, dict[str, Any]] = {}
     for m in column_map:
@@ -244,6 +265,11 @@ def _config_reference() -> dict[str, str]:
     pct_opts = "|".join(sorted(PERCENT_BASES))
     stat_opts = ", ".join(sorted(STAT_KEYS))
     return {
+        "only": (
+            "(top-level, not per-question) list of question tags or qids to show, e.g. [\"Q1.5\"]. "
+            "When set, every other question is hidden from the report regardless of its own include "
+            "value. Omit (the default) to include everything, minus any individual include: false."
+        ),
         "include": "true|false - include this question in the report",
         "sort_by": f"{sort_opts} - response ordering; response_order also needs the response_order list below",
         "response_order": "list of response codes in the order to display them (used when sort_by is response_order)",
@@ -422,6 +448,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
         grouped[qkey].append(m)
 
     display_logic = display_logic or {}
+    only_set = _resolve_only(column_map, config.get("only"))
     tables: dict[str, list[dict[str, Any]]] = {}
     table_meta: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
@@ -430,6 +457,8 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
         cfg = dict(defaults)
         cfg.update(qcfgs.get(qkey, {}))
         if cfg.get("include", True) is False:
+            continue
+        if only_set is not None and qkey not in only_set:
             continue
 
         for spec in _table_specs(cfg):
