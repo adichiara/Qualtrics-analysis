@@ -97,6 +97,32 @@ def test_real_fixture_text_column_frequency_mode(tmp_path) -> None:
     assert "Q1.5_3_TEXT" not in manifest["skipped_text_entry_columns"]
 
 
+def test_excluded_question_writein_not_written(tmp_path) -> None:
+    """A question with include: False must not leak a write-in output either.
+
+    Write-in columns default to text_reporting_mode "summarize_later", which
+    is written straight to open_text_outputs/ rather than going through the
+    frequency-table path -- it must still honor the question's include flag.
+    """
+    fixture = Path("tests/fixtures/real_run")
+    data_path = fixture / "responses_clean.csv"
+    column_map_path = fixture / "column_map.json"
+    column_map = json.loads(column_map_path.read_text(encoding="utf-8"))
+    config = build_default_config(column_map)
+    config["questions"]["QID2"]["include"] = False
+
+    config_path = tmp_path / "config_excluded.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    outdir = tmp_path / "out_excluded"
+    run_frequency_analysis(data_path, column_map_path, outdir, config_path, strict=False)
+
+    assert not (outdir / "frequency_tables" / "QID2_frequencies.csv").exists()
+    assert not any((outdir / "open_text_outputs").glob("QID2_*"))
+
+    manifest = json.loads((outdir / "frequency_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["text_entry_outputs"] == []
+
+
 def _make_multi_select_column(col: str, sub_text: str) -> dict:
     return {
         "survey_id": "SV_1", "qid": "QID1", "data_export_tag": "Q1",

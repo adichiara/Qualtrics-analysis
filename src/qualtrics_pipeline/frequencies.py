@@ -408,6 +408,8 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
         qkey = _question_key(m)
         cfg = dict(defaults)
         cfg.update(qcfgs.get(qkey, {}))
+        if cfg.get("include", True) is False:
+            continue
 
         if m.get("is_text_entry_suffix"):
             mode = _text_mode_for(m, cfg)
@@ -429,8 +431,6 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
     for qkey, mappings in grouped.items():
         cfg = dict(defaults)
         cfg.update(qcfgs.get(qkey, {}))
-        if cfg.get("include", True) is False:
-            continue
 
         for spec in _table_specs(cfg):
             gcols = [str(g) for g in (spec.get("group_by") or [])]
