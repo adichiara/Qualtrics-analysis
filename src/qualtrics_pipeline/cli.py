@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import webbrowser
 from pathlib import Path
 from typing import Any, Callable
@@ -23,6 +24,7 @@ from typing import Any, Callable
 STATE_FILE = Path(".qualtrics_cli_state.json")
 DEFAULT_CONFIG_NAME = "qualtrics_frequency_config.json"
 REQUIRED_ENV_VARS = ["QUALTRICS_API_TOKEN", "QUALTRICS_DATA_CENTER", "QUALTRICS_DIRECTORY_ID"]
+DEFAULT_EDITOR = "vi"
 
 InputFn = Callable[[str], str]
 PrintFn = Callable[..., None]
@@ -200,6 +202,58 @@ def action_init_config(state: dict, input_fn: InputFn, print_fn: PrintFn) -> Pat
     state.update(last_run_dir=str(run_dir), last_config_path=str(config_path))
     save_state(state)
     return config_path
+
+
+def action_edit_config(state: dict, input_fn: InputFn, print_fn: PrintFn) -> None:
+    """Hand-edit the config file in $EDITOR, then validate it on return.
+
+    Since --init-config now writes a self-documenting config (a _reference
+    cheat sheet, _groupable_questions, and per-question _question /
+    _response_labels annotations), editing the JSON directly is the fastest
+    way to sweep through many questions -- faster than the guided
+    "Configure a single question" menu, which is better suited to one-off
+    tweaks.
+    """
+    from .config_validate import format_issues, validate_config
+
+    run_dir = _select_run(state, input_fn, print_fn)
+    if run_dir is None:
+        return
+    column_map_path = run_dir / "column_map.json"
+    if not column_map_path.exists():
+        print_fn(f"No column_map.json found in {run_dir}")
+        return
+    cmap = json.loads(column_map_path.read_text(encoding="utf-8"))
+
+    config_path = Path(_ask(input_fn, "Config path", state.get("last_config_path") or str(default_config_path(run_dir))))
+    if not config_path.exists():
+        if not _confirm(input_fn, f"{config_path} does not exist. Initialize it now?"):
+            print_fn("Nothing to edit.")
+            return
+        from .frequencies import build_default_config
+
+        config_path.write_text(json.dumps(build_default_config(cmap), indent=2), encoding="utf-8")
+        print_fn(f"Wrote {config_path}")
+
+    state.update(last_run_dir=str(run_dir), last_config_path=str(config_path))
+    save_state(state)
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or DEFAULT_EDITOR
+    print_fn(f"Opening {config_path} in '{editor}'...")
+    try:
+        subprocess.run([editor, str(config_path)], check=False)
+    except OSError:
+        print_fn(f"Could not launch editor '{editor}'. Set $EDITOR and edit {config_path} yourself, "
+                  "then use 'Validate config'.")
+        return
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print_fn(f"{config_path} is not valid JSON: {e}")
+        return
+    issues = validate_config(config, cmap)
+    print_fn(format_issues(issues) if issues else "Config OK: no issues found.")
 
 
 def _truncate(text: str, width: int) -> str:
@@ -568,8 +622,9 @@ def action_show_status(state: dict, input_fn: InputFn, print_fn: PrintFn) -> Non
 
 MENU = [
     ("Export survey from Qualtrics", action_export),
-    ("Initialize / update frequency config for a run", action_init_config),
-    ("Configure question reporting options", action_configure_question),
+    ("Initialize frequency config for a run", action_init_config),
+    ("Edit config file (recommended: hand-edit the self-documenting JSON)", action_edit_config),
+    ("Configure a single question (guided menu)", action_configure_question),
     ("Validate config", action_validate_config),
     ("Run frequency analysis + report", action_run_analysis),
     ("Regenerate HTML report only", action_regenerate_report),
