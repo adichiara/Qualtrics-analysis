@@ -205,6 +205,72 @@ def test_action_run_analysis_missing_data_file_reports_error(tmp_path, monkeypat
     assert any("No responses_clean.csv" in line for line in lines)
 
 
+# ---------------------------------------------------------------------------
+# action_edit_config
+# ---------------------------------------------------------------------------
+
+def test_action_edit_config_launches_editor_and_validates(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    run_dir = _fixture_run(tmp_path)
+    cfg_path = run_dir / "cfg.json"
+    from qualtrics_pipeline.frequencies import build_default_config
+
+    cmap = json.loads((run_dir / "column_map.json").read_text(encoding="utf-8"))
+    cfg_path.write_text(json.dumps(build_default_config(cmap)), encoding="utf-8")
+
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda args, **kw: calls.append(args))
+
+    lines, print_fn = _capture()
+    input_fn = FakeInput([str(run_dir), str(cfg_path)])
+    state: dict = {}
+
+    cli.action_edit_config(state, input_fn, print_fn)
+
+    assert calls == [["fake-editor", str(cfg_path)]]
+    assert any("Config OK" in line for line in lines)
+    assert state["last_config_path"] == str(cfg_path)
+
+
+def test_action_edit_config_offers_to_init_missing_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    run_dir = _fixture_run(tmp_path)
+    cfg_path = run_dir / "cfg.json"
+    monkeypatch.setattr(cli.subprocess, "run", lambda args, **kw: None)
+
+    lines, print_fn = _capture()
+    input_fn = FakeInput([str(run_dir), str(cfg_path), "y"])  # confirm init
+    state: dict = {}
+
+    cli.action_edit_config(state, input_fn, print_fn)
+
+    assert cfg_path.exists()
+    assert any("Config OK" in line for line in lines)
+
+
+def test_action_edit_config_reports_invalid_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    run_dir = _fixture_run(tmp_path)
+    cfg_path = run_dir / "cfg.json"
+    cfg_path.write_text('{"defaults": {}, "questions": {}}', encoding="utf-8")
+
+    def _break_file(args, **kw):
+        cfg_path.write_text("{not json", encoding="utf-8")
+
+    monkeypatch.setattr(cli.subprocess, "run", _break_file)
+
+    lines, print_fn = _capture()
+    input_fn = FakeInput([str(run_dir), str(cfg_path)])
+    state: dict = {}
+
+    cli.action_edit_config(state, input_fn, print_fn)
+
+    assert any("not valid JSON" in line for line in lines)
+
+
 def test_action_export_blocks_when_env_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("QUALTRICS_API_TOKEN", raising=False)
