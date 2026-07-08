@@ -173,6 +173,19 @@ python -m qualtrics_pipeline.frequencies \
   --strict
 ```
 
+### Trying formatting options live in the browser
+
+Every question's table in `report.html` has a small control bar (show/hide the
+response-code column, which stats to display, a total row, and — for grouped
+crosstabs — orientation and an Overall column/row) that re-renders that table
+instantly in the browser as you toggle it. Nothing you change there is saved
+automatically — it's for trying out different formats before committing to one.
+
+Open "Show config snippet" under a table's controls to see the exact JSON for
+your current toggle state; paste it into that question's block (or its `tables`
+entry, for a grouped table) in `qualtrics_frequency_config.json` to make the
+change permanent and reflected the next time anyone regenerates the report.
+
 Default frequency behavior skips unmapped, metadata, sensitive, and open-text columns unless config includes them explicitly.
 
 
