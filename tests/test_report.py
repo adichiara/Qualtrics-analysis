@@ -311,6 +311,32 @@ def test_interactive_scaffolding_embedded(tmp_path) -> None:
     assert '"stat_labels"' in html
 
 
+def test_stat_chip_labels_are_unique_for_every_base() -> None:
+    """Regression: `pct`/`base_n` are aliases that resolve to whichever base is
+    featured, so labelling the stat toggles with _STAT_LABEL rendered a duplicate
+    pair (e.g. "Eligible n" and "Eligible %" twice). Toggles use _STAT_CHIP_LABEL,
+    which must stay collision-free for every reporting base."""
+    from qualtrics_pipeline.report import _STAT_CHIP_LABEL, _STAT_ORDER, _stat_label
+
+    for base in ("valid", "eligible", "total"):
+        labels = [_STAT_CHIP_LABEL.get(s) or _stat_label(s, base) for s in _STAT_ORDER]
+        assert len(labels) == len(set(labels)), f"duplicate chip label for base {base}: {labels}"
+
+
+def test_constants_blob_carries_chip_labels_and_definitions(tmp_path) -> None:
+    """The browser reads labels/definitions from the shared constants blob rather
+    than duplicating them as JS literals, so they must actually be published."""
+    html = generate_html_report(_flat_run(tmp_path)).read_text()
+    blob = html.split('id="rr-constants"')[1].split("</script>")[0]
+    for key in ('"stat_chip_labels"', '"stat_definitions"', '"alias_stats"'):
+        assert key in blob
+    assert "Featured %" in blob and "Featured base n" in blob
+    # every selectable stat is documented
+    for stat in ["n", "valid_n", "valid_pct", "eligible_n", "eligible_pct",
+                 "total_n", "total_pct", "pct", "base_n"]:
+        assert f'"{stat}":' in blob
+
+
 def test_grouped_scaffolding_overall_rows_null_when_absent(tmp_path) -> None:
     """When a question has no ungrouped/overall table, the embedded overall_rows
     must be explicit JSON null (not just omitted) so the browser-side Overall

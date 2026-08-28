@@ -37,5 +37,13 @@ line-length = 100
 line-length = 100
 target-version = "py310"
 
+[tool.ruff.lint]
+# Pin the rule set explicitly. Ruff's *default* selection is not stable across
+# releases -- 0.16 widened it well beyond the historical E4/E7/E9/F, which turned
+# CI red on code nobody had touched (30 findings across I, RUF, PIE, BLE, DTZ,
+# EXE, FURB and UP). Naming the set here means a ruff upgrade can no longer
+# change what CI enforces on its own. Adopting more rules is a deliberate edit.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

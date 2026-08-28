@@ -73,6 +73,27 @@ _STAT_LABEL = {
     "eligible_pct": "Eligible %", "total_n": "Total n", "total_pct": "Total %",
     "pct": "%", "base_n": "Base n",
 }
+# Labels for the stat *toggles* only. "pct"/"base_n" are aliases that resolve to
+# whichever base is featured, so labelling a toggle with _STAT_LABEL would repeat
+# the concrete stat it resolves to ("Eligible %" twice, "Eligible n" twice). Column
+# headers still use _STAT_LABEL -- a header should name the number it actually shows.
+_STAT_CHIP_LABEL = {"pct": "Featured %", "base_n": "Featured base n"}
+# What each column means, shown in the report's "statistic definitions" panel. The
+# three bases mirror the semantics documented in frequencies.py.
+_STAT_DEFINITION = {
+    "n": "Respondents who chose this response option.",
+    "valid_n": "Denominator: respondents who answered this question.",
+    "valid_pct": "n ÷ Valid n — share of those who answered.",
+    "eligible_n": (
+        "Denominator: respondents shown this question per its display logic "
+        "(all respondents when the question has no display logic)."
+    ),
+    "eligible_pct": "n ÷ Eligible n — share of those who were asked.",
+    "total_n": "Denominator: all survey respondents.",
+    "total_pct": "n ÷ Total n — prevalence across the whole sample.",
+    "pct": "Whichever percentage this question's reporting base features.",
+    "base_n": "Whichever base count this question's reporting base features.",
+}
 _DEFAULT_FLAT_STATS = ["n", "valid_pct", "eligible_pct", "total_pct"]
 _DEFAULT_CELL_STATS = ["n", "pct"]
 _PRES_DEFAULT = {
@@ -87,7 +108,10 @@ def _constants_blob() -> str:
     same constants the Python renderers use so the two can't drift apart."""
     data = {
         "stat_labels": _STAT_LABEL,
+        "stat_chip_labels": _STAT_CHIP_LABEL,
+        "stat_definitions": _STAT_DEFINITION,
         "stat_order": _STAT_ORDER,
+        "alias_stats": sorted(_STAT_CHIP_LABEL),
         "pct_field": _PCT_FIELD,
         "n_field": _N_FIELD,
         "default_flat_stats": _DEFAULT_FLAT_STATS,
@@ -189,6 +213,20 @@ table.writein th { background: #eef1f4; }
 .rr-snippet-hint { font-size: 0.78rem; color: #555; margin-bottom: 0.3rem; }
 .rr-copy-btn { font-size: 0.8rem; padding: 0.15rem 0.6rem; cursor: pointer; }
 .rr-copy-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.rr-chip-group { display: flex; align-items: center; gap: 0.15rem 0.7rem; flex-wrap: wrap; }
+.rr-chip-group + .rr-chip-group { border-left: 1px solid #d0d7de; padding-left: 0.7rem; }
+.rr-chip-group > .rr-group-name { color: #666; font-size: 0.78rem; text-transform: uppercase;
+                                  letter-spacing: 0.03em; }
+.rr-defs summary { font-size: 0.85rem; font-weight: 600; }
+.rr-defs table { width: auto; max-width: 100%; margin: 0.4rem 0; font-size: 0.8rem; background: #fff; }
+.rr-defs td:first-child { white-space: nowrap; font-weight: 600; }
+.rr-defs .rr-defs-note { font-size: 0.78rem; color: #555; margin-top: 0.3rem; }
+th.rr-sortable { cursor: pointer; user-select: none; }
+th.rr-sortable:hover { background: #e4e9ef; }
+th.rr-sortable:focus-visible { outline: 2px solid #0969da; outline-offset: -2px; }
+th.rr-sortable .rr-arrow { color: #57606a; font-size: 0.75rem; margin-left: 0.2rem; }
+.rr-snippet-part + .rr-snippet-part { margin-top: 0.6rem; padding-top: 0.5rem;
+                                       border-top: 1px solid #e1e4e8; }
 """
 
 
@@ -212,6 +250,17 @@ function rrInit() {
   function statLabel(stat, reportBase) {
     var field = (stat === "pct" || stat === "base_n") ? statField(stat, reportBase) : stat;
     return constants.stat_labels[field] || stat;
+  }
+  function isAlias(stat) { return constants.alias_stats.indexOf(stat) !== -1; }
+  // Toggle label. Aliases get their own name so they don't read as a duplicate of the
+  // concrete stat they currently resolve to; column headers keep using statLabel().
+  function chipLabel(stat, reportBase) {
+    return constants.stat_chip_labels[stat] || statLabel(stat, reportBase);
+  }
+  function chipTitle(stat, reportBase) {
+    if (!isAlias(stat)) { return constants.stat_definitions[stat] || ""; }
+    return "Tracks this question's reporting base (currently " +
+      statLabel(stat, reportBase) + ").";
   }
   function fmtPct(raw) {
     if (raw === null || raw === undefined || raw === "") { return ""; }
@@ -279,19 +328,88 @@ function rrInit() {
     return cell;
   }
 
+  // ---- sorting ----
+  // Sort state is {key: <column id>, dir: "asc"|"desc"}, or null for the
+  // config-driven order the CSV was written in. Headers cycle asc -> desc -> off
+  // so that original order stays reachable.
+  function sameKey(a, b) {
+    if (!a || !b || a.kind !== b.kind) { return false; }
+    return a.kind === "stat" ? a.stat === b.stat : true;
+  }
+  function nextSort(current, key) {
+    if (!current || !sameKey(current.key, key)) { return { key: key, dir: "asc" }; }
+    return current.dir === "asc" ? { key: key, dir: "desc" } : null;
+  }
+  // Missing values sort last in both directions rather than clumping at one end.
+  function compareValues(a, b, numeric) {
+    var aMissing = a === null || a === undefined || a === "";
+    var bMissing = b === null || b === undefined || b === "";
+    if (aMissing || bMissing) { return aMissing && bMissing ? 0 : (aMissing ? 1 : -1); }
+    if (numeric) {
+      var na = Number(a), nb = Number(b);
+      var naBad = Number.isNaN(na), nbBad = Number.isNaN(nb);
+      if (naBad || nbBad) { return naBad && nbBad ? 0 : (naBad ? 1 : -1); }
+      return na === nb ? 0 : (na < nb ? -1 : 1);
+    }
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  }
+  // Array.prototype.sort is stable, so equal keys keep the config-driven order.
+  function sortItems(items, sort, valueOf) {
+    if (!sort) { return items; }
+    var numeric = sort.key.kind === "stat";
+    var out = items.slice();
+    out.sort(function (x, y) {
+      var c = compareValues(valueOf(x), valueOf(y), numeric);
+      return sort.dir === "desc" ? -c : c;
+    });
+    return out;
+  }
+  // Turns an already-built <th> into a sort control, appending the active arrow.
+  function makeSortable(cell, key, sort, onSort) {
+    cell.classList.add("rr-sortable");
+    cell.tabIndex = 0;
+    cell.setAttribute("role", "button");
+    var active = sort && sameKey(sort.key, key);
+    cell.setAttribute("aria-sort", active ? (sort.dir === "asc" ? "ascending" : "descending") : "none");
+    if (active) {
+      var arrow = document.createElement("span");
+      arrow.className = "rr-arrow";
+      arrow.textContent = sort.dir === "asc" ? "\\u25b2" : "\\u25bc";
+      cell.appendChild(arrow);
+    }
+    cell.title = "Sort by this column";
+    function activate() { onSort(key); }
+    cell.addEventListener("click", activate);
+    cell.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); activate(); }
+    });
+    return cell;
+  }
+  function sortableTh(text, cls, key, sort, onSort) {
+    return makeSortable(th(text, cls), key, sort, onSort);
+  }
+
   // ---- flat (ungrouped question) table ----
   function hasAttributeIn(rows) {
     return rows.some(function (r) { return (r.attribute || "").trim() !== ""; });
   }
-  function buildFlatHeader(theadRow, hasAttr, showCode, stats, reportBase) {
+  function flatValueOf(row, key, reportBase) {
+    if (key.kind === "attr") { return row.attribute || ""; }
+    if (key.kind === "code") { return row.response_code || ""; }
+    if (key.kind === "label") { return row.response_label || ""; }
+    return row[statField(key.stat, reportBase)];
+  }
+  function buildFlatHeader(theadRow, hasAttr, showCode, stats, reportBase, sort, onSort) {
     theadRow.innerHTML = "";
-    if (hasAttr) { theadRow.appendChild(th("Attribute")); }
-    if (showCode) { theadRow.appendChild(th("Code")); }
-    theadRow.appendChild(th("Label"));
+    if (hasAttr) { theadRow.appendChild(sortableTh("Attribute", "", { kind: "attr" }, sort, onSort)); }
+    if (showCode) { theadRow.appendChild(sortableTh("Code", "", { kind: "code" }, sort, onSort)); }
+    theadRow.appendChild(sortableTh("Label", "", { kind: "label" }, sort, onSort));
     var featured = constants.pct_field[reportBase];
     stats.forEach(function (stat) {
       var mark = statField(stat, reportBase) === featured ? " \\u2605" : "";
-      theadRow.appendChild(th(statLabel(stat, reportBase) + mark, "num"));
+      theadRow.appendChild(
+        sortableTh(statLabel(stat, reportBase) + mark, "num", { kind: "stat", stat: stat }, sort, onSort)
+      );
     });
   }
   function buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase) {
@@ -312,19 +430,21 @@ function rrInit() {
     stats.forEach(function (stat) { tr.appendChild(cellNode(agg, [stat], reportBase)); });
     return tr;
   }
-  function renderFlatTable(tableEl, rows, reportBase, presentation) {
+  function renderFlatTable(tableEl, rows, reportBase, presentation, sort, onSort) {
     var thead = tableEl.querySelector("thead tr");
     var tbody = tableEl.querySelector("tbody");
     var hasAttr = hasAttributeIn(rows);
     var stats = (presentation.stats && presentation.stats.length) ? presentation.stats : constants.default_flat_stats;
     var showCode = !!presentation.show_code;
-    buildFlatHeader(thead, hasAttr, showCode, stats, reportBase);
+    buildFlatHeader(thead, hasAttr, showCode, stats, reportBase, sort, onSort);
     tbody.innerHTML = "";
+    // The Total row is synthesized from the full, unsorted row set and was never a
+    // member of it, so sorting can neither reorder nor alter it.
     if (presentation.response_total === "before") {
       var totalBefore = buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase);
       if (totalBefore) { tbody.appendChild(totalBefore); }
     }
-    rows.forEach(function (row) {
+    sortItems(rows, sort, function (row) { return flatValueOf(row, sort.key, reportBase); }).forEach(function (row) {
       var tr = document.createElement("tr");
       if (hasAttr) { tr.appendChild(td(row.attribute || "")); }
       if (showCode) { tr.appendChild(td(row.response_code || "")); }
@@ -408,7 +528,23 @@ function rrInit() {
     cell.appendChild(span);
     return cell;
   }
-  function renderGroupedTable(tableEl, pivot, stats, showCode, orientation, reportBase) {
+  // Aggregate rows (the response Total, and the Overall group) are pinned at the
+  // position their config option puts them; only real data rows take part in a sort.
+  function isAggregateOpt(opt) { return opt.attr === "__total__"; }
+  function isAggregateGroup(g) { return g.code === "__overall__"; }
+  // Sorts `items` while leaving pinned entries at their original indices.
+  function sortAroundPinned(items, isPinned, sort, valueOf) {
+    if (!sort) { return items; }
+    var sorted = sortItems(items.filter(function (it) { return !isPinned(it); }), sort, valueOf);
+    var next = 0;
+    return items.map(function (it) { return isPinned(it) ? it : sorted[next++]; });
+  }
+  // The value a cell sorts by. Multi-stat cells sort on the first selected stat,
+  // which is the primary value shown.
+  function cellSortValue(row, stats, reportBase) {
+    return row ? row[statField(stats[0], reportBase)] : "";
+  }
+  function renderGroupedTable(tableEl, pivot, stats, showCode, orientation, reportBase, sort, onSort) {
     var thead = tableEl.querySelector("thead tr");
     var tbody = tableEl.querySelector("tbody");
     thead.innerHTML = "";
@@ -416,28 +552,46 @@ function rrInit() {
     var groups = pivot.groups, respAxis = pivot.respAxis, hasAttr = pivot.hasAttr, data = pivot.data;
 
     if (orientation === "rows") {
-      thead.appendChild(th("Group"));
+      // Rows are groups; sort them by group label or by a response column's value.
+      thead.appendChild(sortableTh("Group", "", { kind: "group" }, sort, onSort));
       respAxis.forEach(function (opt) {
-        var isTotal = opt.attr === "__total__";
+        var isTotal = isAggregateOpt(opt);
         var extra = (hasAttr && opt.attr !== "" && !isTotal) ? (opt.attr + ": ") : "";
-        thead.appendChild(th(extra + respLabelText(opt, showCode), "num"));
+        var text = extra + respLabelText(opt, showCode);
+        thead.appendChild(
+          sortableTh(text, "num", { kind: "stat", stat: "opt:" + opt.attr + "\\u0001" + opt.code }, sort, onSort)
+        );
       });
-      groups.forEach(function (g) {
+      sortAroundPinned(groups, isAggregateGroup, sort, function (g) {
+        if (sort.key.kind === "group") { return g.label; }
+        var parts = String(sort.key.stat).slice(4).split("\\u0001");
+        return cellSortValue(data(g.code, parts[0], parts[1], parts[0] === "__total__"), stats, reportBase);
+      }).forEach(function (g) {
         var tr = document.createElement("tr");
         tr.appendChild(groupHeaderCell(g.label, g.base));
         respAxis.forEach(function (opt) {
-          var isTotal = opt.attr === "__total__";
-          tr.appendChild(cellNode(data(g.code, opt.attr, opt.code, isTotal), stats, reportBase));
+          tr.appendChild(cellNode(data(g.code, opt.attr, opt.code, isAggregateOpt(opt)), stats, reportBase));
         });
         tbody.appendChild(tr);
       });
     } else {
-      if (hasAttr) { thead.appendChild(th("Attribute")); }
-      if (showCode) { thead.appendChild(th("Code")); }
-      thead.appendChild(th("Response"));
-      groups.forEach(function (g) { thead.appendChild(groupHeaderCell(g.label, g.base)); });
-      respAxis.forEach(function (opt) {
-        var isTotal = opt.attr === "__total__";
+      // Rows are response options; sort them by code/label or by a group column.
+      if (hasAttr) { thead.appendChild(sortableTh("Attribute", "", { kind: "attr" }, sort, onSort)); }
+      if (showCode) { thead.appendChild(sortableTh("Code", "", { kind: "code" }, sort, onSort)); }
+      thead.appendChild(sortableTh("Response", "", { kind: "label" }, sort, onSort));
+      groups.forEach(function (g) {
+        thead.appendChild(
+          makeSortable(groupHeaderCell(g.label, g.base), { kind: "stat", stat: "grp:" + g.code }, sort, onSort)
+        );
+      });
+      sortAroundPinned(respAxis, isAggregateOpt, sort, function (opt) {
+        if (sort.key.kind === "attr") { return opt.attr; }
+        if (sort.key.kind === "code") { return opt.code; }
+        if (sort.key.kind === "label") { return opt.label; }
+        var gcode = String(sort.key.stat).slice(4);
+        return cellSortValue(data(gcode, opt.attr, opt.code, false), stats, reportBase);
+      }).forEach(function (opt) {
+        var isTotal = isAggregateOpt(opt);
         var tr = document.createElement("tr");
         if (hasAttr) { tr.appendChild(td(isTotal ? "" : opt.attr)); }
         if (showCode) { tr.appendChild(td(isTotal ? "" : opt.code)); }
@@ -456,11 +610,14 @@ function rrInit() {
         tbody.appendChild(tr);
       });
     }
+    return pivot;
   }
-  function renderGrouped(tableEl, sdata, presentation) {
+  function renderGrouped(tableEl, sdata, presentation, sort, onSort) {
     var pivot = pivotGrouped(sdata.rows, sdata.overall_rows, presentation, sdata.report_base);
     var stats = (presentation.stats && presentation.stats.length) ? presentation.stats : constants.default_cell_stats;
-    renderGroupedTable(tableEl, pivot, stats, !!presentation.show_code, presentation.orientation || "columns", sdata.report_base);
+    renderGroupedTable(tableEl, pivot, stats, !!presentation.show_code,
+      presentation.orientation || "columns", sdata.report_base, sort, onSort);
+    return pivot;
   }
 
   // ---- control bar widgets ----
@@ -496,6 +653,17 @@ function rrInit() {
   function addStatChips(container, statOrder, selected, reportBase, onChange) {
     var chipsRow = document.createElement("div");
     chipsRow.className = "rr-chips";
+    // Concrete stats first, then the base-tracking aliases in their own labelled
+    // group so the pair reads as a distinct choice rather than a repeat.
+    var concreteGroup = document.createElement("div");
+    concreteGroup.className = "rr-chip-group";
+    var aliasGroup = document.createElement("div");
+    aliasGroup.className = "rr-chip-group";
+    var aliasName = document.createElement("span");
+    aliasName.className = "rr-group-name";
+    aliasName.textContent = "Featured";
+    aliasGroup.appendChild(aliasName);
+
     var boxes = [];
     statOrder.forEach(function (stat) {
       var label = document.createElement("label");
@@ -511,11 +679,82 @@ function rrInit() {
         onChange(checkedNow.map(function (b) { return b.stat; }));
       });
       label.appendChild(input);
-      label.appendChild(document.createTextNode(statLabel(stat, reportBase)));
-      chipsRow.appendChild(label);
+      label.appendChild(document.createTextNode(chipLabel(stat, reportBase)));
+      label.title = chipTitle(stat, reportBase);
+      (isAlias(stat) ? aliasGroup : concreteGroup).appendChild(label);
       boxes.push({ stat: stat, input: input });
     });
+    chipsRow.appendChild(concreteGroup);
+    chipsRow.appendChild(aliasGroup);
     container.appendChild(chipsRow);
+  }
+
+  // ---- statistic definitions ----
+  function buildDefsPanel(container, reportBase, kind, getStats) {
+    var details = document.createElement("details");
+    details.className = "rr-defs";
+    var summary = document.createElement("summary");
+    summary.textContent = "Show statistic definitions";
+    details.appendChild(summary);
+    var body = document.createElement("div");
+    details.appendChild(body);
+    container.appendChild(details);
+
+    // The stats on show, plus the base count any displayed percentage divides by --
+    // "n ÷ Valid n" is opaque if Valid n isn't itself a column.
+    function statsToDefine() {
+      var out = [];
+      getStats().forEach(function (stat) {
+        if (out.indexOf(stat) === -1) { out.push(stat); }
+        var field = statField(stat, reportBase);
+        if (field.slice(-4) === "_pct") {
+          var base = field.slice(0, -4) + "_n";
+          if (constants.stat_definitions[base] && out.indexOf(base) === -1) { out.push(base); }
+        }
+      });
+      return out;
+    }
+
+    function refresh() {
+      body.innerHTML = "";
+      var table = document.createElement("table");
+      var tbody = document.createElement("tbody");
+      statsToDefine().forEach(function (stat) {
+        var tr = document.createElement("tr");
+        var name = chipLabel(stat, reportBase);
+        if (isAlias(stat)) { name += " (" + statLabel(stat, reportBase) + ")"; }
+        tr.appendChild(td(name));
+        var def = constants.stat_definitions[stat] || "";
+        if (isAlias(stat)) {
+          def += " For this question that is " + statLabel(stat, reportBase) + ".";
+        }
+        tr.appendChild(td(def));
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      body.appendChild(table);
+
+      var notes = [
+        "\\u2605 marks the column matching this question's reporting base.",
+        "The Total row sums n and the percentages across the response options shown; " +
+          "the base counts (Valid/Eligible/Total n) are held constant, not summed. " +
+          "Percentages can exceed 100% for multi-select questions.",
+      ];
+      if (kind === "grouped") {
+        notes.push("Cells are computed within each group: the n= under a group heading " +
+          "is that group's base. An Overall column/row is the same question ungrouped.");
+        notes.push("Sorting by a group column uses the first selected statistic, " +
+          "which is the primary value shown in each cell.");
+      }
+      notes.forEach(function (text) {
+        var note = document.createElement("div");
+        note.className = "rr-defs-note";
+        note.textContent = text;
+        body.appendChild(note);
+      });
+    }
+    refresh();
+    return refresh;
   }
 
   // ---- copy-config snippet ----
@@ -536,50 +775,52 @@ function rrInit() {
     });
     return diff;
   }
-  function buildSnippetPanel(container, kind, questionId, groupKeys, effective, getEdited) {
-    var details = document.createElement("details");
-    details.className = "rr-snippet";
-    var summary = document.createElement("summary");
-    summary.textContent = "Show config snippet";
-    details.appendChild(summary);
-
+  // Translate a browser sort into config keys. sort_by/response_order are
+  // question-level keys consumed when the frequency CSVs are written, so they are
+  // emitted separately from the render-time presentation keys, and only when the
+  // sorted axis is the response axis (group ordering has no config equivalent).
+  function sortConfig(sort, axis) {
+    if (!sort) { return { keys: {}, note: "" }; }
+    if (!axis || !axis.sortsResponses) {
+      return { keys: {}, note: "Group ordering isn't configurable, so this sort isn't included below." };
+    }
+    if (sort.key.kind === "stat" && sort.key.stat === "n") {
+      return { keys: { sort_by: sort.dir === "asc" ? "count_asc" : "count_desc" }, note: "" };
+    }
+    if (axis.hasAttr) {
+      return {
+        keys: {},
+        note: "This question has attributes, so a response code isn't unique and " +
+          "response_order would be ambiguous; this sort isn't included below.",
+      };
+    }
+    var codes = axis.codes();
+    if (!codes.length) { return { keys: {}, note: "" }; }
+    return { keys: { sort_by: "response_order", response_order: codes }, note: "" };
+  }
+  function snippetPart(parent, hintText) {
+    var wrap = document.createElement("div");
+    wrap.className = "rr-snippet-part";
     var hint = document.createElement("div");
     hint.className = "rr-snippet-hint";
-    hint.textContent = kind === "flat"
-      ? "Paste these keys into \\"" + questionId + "\\"'s block in qualtrics_frequency_config.json."
-      : "Paste these keys into the matching \\"tables\\" entry (group_by: [" +
-        groupKeys.map(function (g) { return '"' + g + '"'; }).join(", ") +
-        "]) for \\"" + questionId + "\\".";
-    details.appendChild(hint);
-
+    hint.textContent = hintText;
+    wrap.appendChild(hint);
     var textarea = document.createElement("textarea");
     textarea.className = "rr-snippet-body";
     textarea.readOnly = true;
     textarea.rows = 4;
-    details.appendChild(textarea);
-
+    wrap.appendChild(textarea);
     var copyBtn = document.createElement("button");
     copyBtn.type = "button";
     copyBtn.className = "rr-copy-btn";
     copyBtn.textContent = "Copy";
-    details.appendChild(copyBtn);
-
+    wrap.appendChild(copyBtn);
     var note = document.createElement("span");
     note.className = "rr-note";
     note.style.marginLeft = "0.5rem";
-    details.appendChild(note);
+    wrap.appendChild(note);
+    parent.appendChild(wrap);
 
-    function refresh() {
-      var diff = buildDiff(kind, effective, getEdited());
-      if (Object.keys(diff).length === 0) {
-        textarea.value = "// no changes \\u2014 matches current config";
-        copyBtn.disabled = true;
-      } else {
-        textarea.value = JSON.stringify(diff, null, 2);
-        copyBtn.disabled = false;
-      }
-      note.textContent = "";
-    }
     copyBtn.addEventListener("click", function () {
       var text = textarea.value;
       function fallback() {
@@ -596,8 +837,51 @@ function rrInit() {
         fallback();
       }
     });
-
+    return function (obj) {
+      var empty = !obj || Object.keys(obj).length === 0;
+      wrap.style.display = empty ? "none" : "";
+      // Cleared rather than just hidden, so a stale snippet can't be copied.
+      textarea.value = empty ? "" : JSON.stringify(obj, null, 2);
+      copyBtn.disabled = empty;
+      note.textContent = "";
+      return !empty;
+    };
+  }
+  function buildSnippetPanel(container, kind, questionId, groupKeys, effective, getEdited, getSort, getAxis) {
+    var details = document.createElement("details");
+    details.className = "rr-snippet";
+    var summary = document.createElement("summary");
+    summary.textContent = "Show config snippet";
+    details.appendChild(summary);
     container.appendChild(details);
+
+    var groupByText = groupKeys.map(function (g) { return '"' + g + '"'; }).join(", ");
+    var presHint = kind === "flat"
+      ? "Paste into \\"" + questionId + "\\"'s block in qualtrics_frequency_config.json."
+      : "Paste into the matching \\"tables\\" entry (group_by: [" + groupByText +
+        "]) for \\"" + questionId + "\\".";
+    // Sort keys always belong to the question block, even for a grouped table.
+    var sortHint = "Paste into \\"" + questionId + "\\"'s block (not the \\"tables\\" entry). " +
+      "Applied when frequency tables are generated \\u2014 re-run the frequencies stage to see it.";
+
+    var setPres = snippetPart(details, presHint);
+    var setSort = snippetPart(details, sortHint);
+
+    var empty = document.createElement("div");
+    empty.className = "rr-snippet-hint";
+    empty.textContent = "No changes \\u2014 matches the current config.";
+    details.appendChild(empty);
+    var sortNote = document.createElement("div");
+    sortNote.className = "rr-snippet-hint";
+    details.appendChild(sortNote);
+
+    function refresh() {
+      var shown = setPres(buildDiff(kind, effective, getEdited()));
+      var sc = sortConfig(getSort(), getAxis());
+      shown = setSort(sc.keys) || shown;
+      sortNote.textContent = sc.note;
+      empty.style.display = shown ? "none" : "";
+    }
     return refresh;
   }
 
@@ -617,10 +901,14 @@ function rrInit() {
       show_code: effective.show_code,
       stats: effective.stats.slice(),
       response_total: effective.response_total,
+      sort: null,
     };
+    var hasAttr = hasAttributeIn(sdata.rows);
 
+    function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
-      renderFlatTable(tableEl, sdata.rows, sdata.report_base, state);
+      renderFlatTable(tableEl, sdata.rows, sdata.report_base, state, state.sort, onSort);
+      refreshDefs();
       refreshSnippet();
     }
 
@@ -635,10 +923,24 @@ function rrInit() {
     addStatChips(row2, constants.stat_order, state.stats, sdata.report_base, function (stats) { state.stats = stats; rerender(); });
     toolsEl.appendChild(row2);
 
-    var refreshSnippet = buildSnippetPanel(toolsEl, "flat", sdata.question_id, [], effective, function () {
-      return { show_code: state.show_code, stats: state.stats, response_total: state.response_total };
-    });
-    refreshSnippet();
+    var refreshDefs = buildDefsPanel(toolsEl, sdata.report_base, "flat", function () { return state.stats; });
+    var refreshSnippet = buildSnippetPanel(toolsEl, "flat", sdata.question_id, [], effective,
+      function () {
+        return { show_code: state.show_code, stats: state.stats, response_total: state.response_total };
+      },
+      function () { return state.sort; },
+      function () {
+        return {
+          sortsResponses: true,
+          hasAttr: hasAttr,
+          codes: function () {
+            return sortItems(sdata.rows, state.sort, function (row) {
+              return flatValueOf(row, state.sort.key, sdata.report_base);
+            }).map(function (row) { return row.response_code || ""; });
+          },
+        };
+      });
+    rerender(); // re-render once so the headers become sort controls
   }
 
   function initGroupedSection(toolsEl, slug) {
@@ -661,24 +963,34 @@ function rrInit() {
       overall: effective.overall,
       response_total: effective.response_total,
       stats: effective.stats.slice(),
+      sort: null,
     };
     var metaEl = toolsEl.previousElementSibling;
     if (!metaEl || !metaEl.classList || !metaEl.classList.contains("meta")) { metaEl = null; }
+    var lastPivot = null;
 
+    // Switching orientation swaps which axis the rows are, so a sort key from the
+    // previous orientation no longer addresses a real column.
+    function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
-      renderGrouped(tableEl, sdata, state);
+      lastPivot = renderGrouped(tableEl, sdata, state, state.sort, onSort);
       if (metaEl) {
         var statNames = state.stats.map(function (s) { return statLabel(s, sdata.report_base); }).join(", ");
         metaEl.textContent = "Grouped by " + sdata.group_keys + " \\u00b7 orientation: " + state.orientation +
           " \\u00b7 cells show " + statNames + " (within group)";
       }
+      refreshDefs();
       refreshSnippet();
     }
 
     var row1 = document.createElement("div");
     row1.className = "rr-row";
     addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
-    addSelect(row1, "Orientation", state.orientation, [["columns", "Columns"], ["rows", "Rows"]], function (v) { state.orientation = v; rerender(); });
+    addSelect(row1, "Orientation", state.orientation, [["columns", "Columns"], ["rows", "Rows"]], function (v) {
+      state.orientation = v;
+      state.sort = null; // the old sort key addressed the other axis's columns
+      rerender();
+    });
     toolsEl.appendChild(row1);
 
     var row2 = document.createElement("div");
@@ -696,14 +1008,36 @@ function rrInit() {
     addStatChips(row3, constants.stat_order, state.stats, sdata.report_base, function (stats) { state.stats = stats; rerender(); });
     toolsEl.appendChild(row3);
 
+    var refreshDefs = buildDefsPanel(toolsEl, sdata.report_base, "grouped", function () { return state.stats; });
     var groupByList = sdata.group_keys ? sdata.group_keys.split(" | ") : [];
-    var refreshSnippet = buildSnippetPanel(toolsEl, "grouped", sdata.question_id, groupByList, effective, function () {
-      return {
-        show_code: state.show_code, orientation: state.orientation, overall: state.overall,
-        response_total: state.response_total, stats: state.stats,
-      };
-    });
-    refreshSnippet();
+    var refreshSnippet = buildSnippetPanel(toolsEl, "grouped", sdata.question_id, groupByList, effective,
+      function () {
+        return {
+          show_code: state.show_code, orientation: state.orientation, overall: state.overall,
+          response_total: state.response_total, stats: state.stats,
+        };
+      },
+      function () { return state.sort; },
+      function () {
+        // Only the columns orientation puts response options on the row axis, so
+        // only then does a sort correspond to a response_order.
+        return {
+          sortsResponses: state.orientation !== "rows",
+          hasAttr: !!(lastPivot && lastPivot.hasAttr),
+          codes: function () {
+            if (!lastPivot) { return []; }
+            return sortAroundPinned(lastPivot.respAxis, isAggregateOpt, state.sort, function (opt) {
+              if (state.sort.key.kind === "attr") { return opt.attr; }
+              if (state.sort.key.kind === "code") { return opt.code; }
+              if (state.sort.key.kind === "label") { return opt.label; }
+              var gcode = String(state.sort.key.stat).slice(4);
+              return cellSortValue(lastPivot.data(gcode, opt.attr, opt.code, false), state.stats, sdata.report_base);
+            }).filter(function (opt) { return !isAggregateOpt(opt); })
+              .map(function (opt) { return opt.code || ""; });
+          },
+        };
+      });
+    rerender(); // re-render once so the headers become sort controls
   }
 
   document.querySelectorAll(".rr-tools[data-slug]").forEach(function (el) {
