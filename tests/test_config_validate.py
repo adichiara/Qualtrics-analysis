@@ -207,3 +207,25 @@ def test_run_aborts_on_invalid_config(tmp_path):
     with pytest.raises(SystemExit) as exc:
         run_frequency_analysis(tmp_path / "data.csv", cm, tmp_path / "out", cfg)
     assert "Invalid config" in str(exc.value)
+
+
+def test_pct_decimals_and_hide_codes_validated():
+    cfg = {"questions": {"QID2": {"pct_decimals": 3, "hide_codes": ["-1"]}}}
+    assert _errors(validate_config(cfg, _column_map())) == []
+
+    bad = {"questions": {"QID2": {"pct_decimals": 9}}}
+    assert any("pct_decimals" in m for _w, m in _errors(validate_config(bad, _column_map())))
+
+    # bool is an int subclass, so true/false must be rejected explicitly
+    boolish = {"questions": {"QID2": {"pct_decimals": True}}}
+    assert any("pct_decimals" in m for _w, m in _errors(validate_config(boolish, _column_map())))
+
+    not_list = {"questions": {"QID2": {"hide_codes": "-1"}}}
+    assert any("hide_codes" in m for _w, m in _errors(validate_config(not_list, _column_map())))
+
+
+def test_new_presentation_keys_allowed_on_a_table_spec():
+    cfg = {"questions": {"QID2": {"tables": [
+        {"group_by": ["Q1.9"], "pct_decimals": 0, "hide_codes": ["-1"]},
+    ]}}}
+    assert _errors(validate_config(cfg, _column_map())) == []
