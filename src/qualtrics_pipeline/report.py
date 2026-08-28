@@ -41,9 +41,9 @@ def _natural_question_key(question_id: str, question_key: str) -> tuple:
     return (1, [], question_id or question_key)
 
 
-def _fmt_pct(value: str) -> str:
+def _fmt_pct(value: str, decimals: int = 2) -> str:
     try:
-        return f"{float(value):.2f}%"
+        return f"{float(value):.{decimals}f}%"
     except (ValueError, TypeError):
         return html.escape(str(value))
 
@@ -99,8 +99,74 @@ _DEFAULT_CELL_STATS = ["n", "pct"]
 _PRES_DEFAULT = {
     "show_code": True, "orientation": "columns",
     "overall": False, "response_total": False, "stats": None,
+    "pct_decimals": 2, "hide_codes": [],
 }
-_STAT_ORDER = ["n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "pct", "base_n"]
+# Selectable stats, in display order. "base_n" is deliberately absent: it resolves
+# to whichever base is featured, which a crosstab already prints in its group
+# header and a flat table can name outright, so it never earned a toggle. It stays
+# accepted in config for back-compat.
+_STAT_ORDER = ["n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "pct"]
+_REPORT_BASES = ["valid", "eligible", "total"]
+
+
+def _num(value: Any) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_mutually_exclusive(rows: list[dict]) -> bool:
+    """Whether each respondent contributes to exactly one response option.
+
+    Multi-select questions let one respondent pick several options, so their per
+    -option counts sum past valid_n. question_type is "MC" for both kinds, so the
+    counts themselves are the only signal available in the frequency table.
+    """
+    if not rows:
+        return True
+    return sum(_num(r.get("n")) for r in rows) <= _num(rows[0].get("valid_n")) + 0.5
+
+
+def _code_choices(rows: list[dict]) -> list[dict[str, str]]:
+    """The response codes present in a table, for the hide picker.
+
+    Offering the actual codes with their labels beats typing a sentinel from
+    memory: "-1" is a genuine "Other" option in some exports, so what counts as
+    N/A is a per-survey judgement rather than something to hardcode.
+    """
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for r in rows:
+        code = str(r.get("response_code", "")).strip()
+        if code and code not in seen:
+            seen.add(code)
+            out.append({"code": code, "label": r.get("response_label", "")})
+    return out
+
+
+def _apply_hidden(rows: list[dict], hide_codes: list[str]) -> list[dict]:
+    """Drop hidden response codes and rebase Valid n onto what remains.
+
+    Valid n is defined as the number who answered; once rows are hidden it should
+    mean "chose one of the responses shown", so it becomes the sum of the visible
+    counts and Valid % is recomputed against it. Eligible/Total are prevalence
+    bases over people, not over the displayed options, so they are left alone.
+    """
+    if not hide_codes:
+        return rows
+    hidden = set(hide_codes)
+    visible = [r for r in rows if str(r.get("response_code", "")).strip() not in hidden]
+    if not visible or len(visible) == len(rows) or not _is_mutually_exclusive(rows):
+        return visible
+    new_valid = sum(_num(r.get("n")) for r in visible)
+    out = []
+    for r in visible:
+        r = dict(r)
+        r["valid_n"] = int(new_valid) if new_valid == int(new_valid) else new_valid
+        r["valid_pct"] = round(_num(r.get("n")) / new_valid * 100.0, 10) if new_valid else 0.0
+        out.append(r)
+    return out
 
 
 def _constants_blob() -> str:
@@ -112,6 +178,8 @@ def _constants_blob() -> str:
         "stat_definitions": _STAT_DEFINITION,
         "stat_order": _STAT_ORDER,
         "alias_stats": sorted(_STAT_CHIP_LABEL),
+        "report_bases": _REPORT_BASES,
+        "pct_decimals_max": 6,
         "pct_field": _PCT_FIELD,
         "n_field": _N_FIELD,
         "default_flat_stats": _DEFAULT_FLAT_STATS,
@@ -135,10 +203,10 @@ def _stat_label(stat: str, report_base: str) -> str:
     return _STAT_LABEL.get(stat, stat)
 
 
-def _stat_value(row: dict | None, stat: str, report_base: str) -> str:
+def _stat_value(row: dict | None, stat: str, report_base: str, decimals: int = 2) -> str:
     field = _stat_field(stat, report_base)
     val = (row or {}).get(field, "")
-    return _fmt_pct(val) if field.endswith("_pct") else _esc(val)
+    return _fmt_pct(val, decimals) if field.endswith("_pct") else _esc(val)
 
 
 def _aggregate_rows(rows: list[dict], report_base: str) -> dict:
@@ -162,14 +230,14 @@ def _aggregate_rows(rows: list[dict], report_base: str) -> dict:
     return agg
 
 
-def _cell_html(row: dict | None, stats: list[str], report_base: str) -> str:
+def _cell_html(row: dict | None, stats: list[str], report_base: str, decimals: int = 2) -> str:
     if row is None:
         return '<td class="num">&mdash;</td>'
     if len(stats) == 1:
-        return f'<td class="num">{_stat_value(row, stats[0], report_base)}</td>'
+        return f'<td class="num">{_stat_value(row, stats[0], report_base, decimals)}</td>'
     parts = []
     for i, stat in enumerate(stats):
-        val = _stat_value(row, stat, report_base)
+        val = _stat_value(row, stat, report_base, decimals)
         parts.append(
             val if i == 0
             else f'<span class="meta">{_esc(_stat_label(stat, report_base))}</span> {val}'
@@ -227,6 +295,10 @@ th.rr-sortable:focus-visible { outline: 2px solid #0969da; outline-offset: -2px;
 th.rr-sortable .rr-arrow { color: #57606a; font-size: 0.75rem; margin-left: 0.2rem; }
 .rr-snippet-part + .rr-snippet-part { margin-top: 0.6rem; padding-top: 0.5rem;
                                        border-top: 1px solid #e1e4e8; }
+.rr-tools input.rr-num { width: 4rem; font-size: 0.85rem; }
+.rr-hide summary { font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+.rr-hide .rr-chips { margin-top: 0.3rem; }
+#rr-global:empty { display: none; }
 """
 
 
@@ -241,6 +313,22 @@ function rrInit() {
   if (!constNode) { return; }
   var constants = JSON.parse(constNode.textContent);
   var POSITION_OPTS = [["", "None"], ["before", "Before"], ["after", "After"]];
+  var BASE_OPTS = constants.report_bases.map(function (b) {
+    return [b, b.charAt(0).toUpperCase() + b.slice(1)];
+  });
+
+  // Every section registers its decimals setter here so the report-level control
+  // can set them all at once; syncDecimals keeps that control in step when a
+  // single table is changed on its own.
+  var decimalsSubscribers = [];
+  function registerDecimals(setter, getter) { decimalsSubscribers.push({ set: setter, get: getter }); }
+  var globalDecimalsInput = null;
+  function syncDecimals(value) {
+    if (globalDecimalsInput && Number(globalDecimalsInput.value) !== value) {
+      var uniform = decimalsSubscribers.every(function (s) { return s.get() === value; });
+      globalDecimalsInput.value = uniform ? String(value) : "";
+    }
+  }
 
   function statField(stat, reportBase) {
     if (stat === "pct") { return constants.pct_field[reportBase] || "eligible_pct"; }
@@ -262,17 +350,17 @@ function rrInit() {
     return "Tracks this question's reporting base (currently " +
       statLabel(stat, reportBase) + ").";
   }
-  function fmtPct(raw) {
+  function fmtPct(raw, decimals) {
     if (raw === null || raw === undefined || raw === "") { return ""; }
     var n = Number(raw);
     if (Number.isNaN(n)) { return String(raw); }
-    return n.toFixed(2) + "%";
+    return n.toFixed(decimals === undefined ? 2 : decimals) + "%";
   }
-  function statValue(row, stat, reportBase) {
+  function statValue(row, stat, reportBase, decimals) {
     var field = statField(stat, reportBase);
     var val = row ? row[field] : undefined;
     if (val === undefined || val === null) { val = ""; }
-    return field.slice(-4) === "_pct" ? fmtPct(val) : String(val);
+    return field.slice(-4) === "_pct" ? fmtPct(val, decimals) : String(val);
   }
   function round2(x) { return Math.round(x * 100) / 100; }
   function sumField(rows, field) {
@@ -284,6 +372,31 @@ function rrInit() {
       if (!Number.isNaN(v)) { total += v; }
     }
     return total;
+  }
+  // Port of _is_mutually_exclusive / _apply_hidden. Multi-select questions let a
+  // respondent pick several options, so their counts sum past valid_n and the
+  // "chose a shown response" count isn't derivable -- rebasing is skipped there.
+  function isMutuallyExclusive(rows) {
+    if (!rows.length) { return true; }
+    var total = 0;
+    rows.forEach(function (r) { total += Number(r.n) || 0; });
+    return total <= (Number(rows[0].valid_n) || 0) + 0.5;
+  }
+  function applyHidden(rows, hideCodes) {
+    if (!hideCodes || !hideCodes.length) { return rows; }
+    var hidden = {};
+    hideCodes.forEach(function (c) { hidden[String(c)] = true; });
+    var visible = rows.filter(function (r) { return !hidden[String(r.response_code || "").trim()]; });
+    if (!visible.length || visible.length === rows.length || !isMutuallyExclusive(rows)) { return visible; }
+    var newValid = 0;
+    visible.forEach(function (r) { newValid += Number(r.n) || 0; });
+    return visible.map(function (r) {
+      var copy = {};
+      for (var k in r) { copy[k] = r[k]; }
+      copy.valid_n = newValid;
+      copy.valid_pct = newValid ? (Number(r.n) || 0) / newValid * 100 : 0;
+      return copy;
+    });
   }
   function aggregateRow(rows) {
     if (!rows || !rows.length) { return null; }
@@ -307,7 +420,7 @@ function rrInit() {
     el.textContent = text;
     return el;
   }
-  function cellNode(row, stats, reportBase) {
+  function cellNode(row, stats, reportBase, decimals) {
     var cell = document.createElement("td");
     cell.className = "num";
     if (!row) {
@@ -323,7 +436,7 @@ function rrInit() {
         cell.appendChild(span);
         cell.appendChild(document.createTextNode(" "));
       }
-      cell.appendChild(document.createTextNode(statValue(row, stat, reportBase)));
+      cell.appendChild(document.createTextNode(statValue(row, stat, reportBase, decimals)));
     });
     return cell;
   }
@@ -412,7 +525,7 @@ function rrInit() {
       );
     });
   }
-  function buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase) {
+  function buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase, decimals) {
     var agg = aggregateRow(rows);
     if (!agg) { return null; }
     var tr = document.createElement("tr");
@@ -427,12 +540,17 @@ function rrInit() {
     strong.textContent = "Total";
     labelTd.appendChild(strong);
     tr.appendChild(labelTd);
-    stats.forEach(function (stat) { tr.appendChild(cellNode(agg, [stat], reportBase)); });
+    stats.forEach(function (stat) { tr.appendChild(cellNode(agg, [stat], reportBase, decimals)); });
     return tr;
   }
-  function renderFlatTable(tableEl, rows, reportBase, presentation, sort, onSort) {
+  function renderFlatTable(tableEl, allRows, reportBase, presentation, sort, onSort) {
     var thead = tableEl.querySelector("thead tr");
     var tbody = tableEl.querySelector("tbody");
+    var decimals = presentation.pct_decimals;
+    // Hidden codes drop out before anything else, so the Total row and the sort
+    // both operate on exactly what is displayed.
+    var rows = applyHidden(allRows, presentation.hide_codes);
+    if (!rows.length) { rows = allRows; }
     var hasAttr = hasAttributeIn(rows);
     var stats = (presentation.stats && presentation.stats.length) ? presentation.stats : constants.default_flat_stats;
     var showCode = !!presentation.show_code;
@@ -441,7 +559,7 @@ function rrInit() {
     // The Total row is synthesized from the full, unsorted row set and was never a
     // member of it, so sorting can neither reorder nor alter it.
     if (presentation.response_total === "before") {
-      var totalBefore = buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase);
+      var totalBefore = buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase, decimals);
       if (totalBefore) { tbody.appendChild(totalBefore); }
     }
     sortItems(rows, sort, function (row) { return flatValueOf(row, sort.key, reportBase); }).forEach(function (row) {
@@ -449,11 +567,11 @@ function rrInit() {
       if (hasAttr) { tr.appendChild(td(row.attribute || "")); }
       if (showCode) { tr.appendChild(td(row.response_code || "")); }
       tr.appendChild(td(row.response_label || ""));
-      stats.forEach(function (stat) { tr.appendChild(cellNode(row, [stat], reportBase)); });
+      stats.forEach(function (stat) { tr.appendChild(cellNode(row, [stat], reportBase, decimals)); });
       tbody.appendChild(tr);
     });
     if (presentation.response_total === "after") {
-      var totalAfter = buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase);
+      var totalAfter = buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase, decimals);
       if (totalAfter) { tbody.appendChild(totalAfter); }
     }
   }
@@ -468,6 +586,18 @@ function rrInit() {
       if (!(gc in groupRows)) { groupRows[gc] = []; groupOrder.push(gc); }
       groupRows[gc].push(r);
     });
+    var hide = presentation.hide_codes;
+    if (hide && hide.length) {
+      // Each group column is its own table, so Valid n rebases within the group.
+      // Falling back to the unfiltered rows keeps a group that hid everything visible.
+      var keep = function (rs) { var k = applyHidden(rs, hide); return k.length ? k : rs; };
+      rows = [];
+      groupOrder.forEach(function (gc) {
+        groupRows[gc] = keep(groupRows[gc]);
+        rows = rows.concat(groupRows[gc]);
+      });
+      if (overallRows && overallRows.length) { overallRows = keep(overallRows); }
+    }
     var groups = groupOrder.map(function (gc) {
       return { code: gc, label: groupRows[gc][0].group_labels || "", base: groupRows[gc][0][nField] || "" };
     });
@@ -544,7 +674,7 @@ function rrInit() {
   function cellSortValue(row, stats, reportBase) {
     return row ? row[statField(stats[0], reportBase)] : "";
   }
-  function renderGroupedTable(tableEl, pivot, stats, showCode, orientation, reportBase, sort, onSort) {
+  function renderGroupedTable(tableEl, pivot, stats, showCode, orientation, reportBase, decimals, sort, onSort) {
     var thead = tableEl.querySelector("thead tr");
     var tbody = tableEl.querySelector("tbody");
     thead.innerHTML = "";
@@ -570,7 +700,7 @@ function rrInit() {
         var tr = document.createElement("tr");
         tr.appendChild(groupHeaderCell(g.label, g.base));
         respAxis.forEach(function (opt) {
-          tr.appendChild(cellNode(data(g.code, opt.attr, opt.code, isAggregateOpt(opt)), stats, reportBase));
+          tr.appendChild(cellNode(data(g.code, opt.attr, opt.code, isAggregateOpt(opt)), stats, reportBase, decimals));
         });
         tbody.appendChild(tr);
       });
@@ -605,7 +735,7 @@ function rrInit() {
         }
         tr.appendChild(labelTd);
         groups.forEach(function (g) {
-          tr.appendChild(cellNode(data(g.code, opt.attr, opt.code, isTotal), stats, reportBase));
+          tr.appendChild(cellNode(data(g.code, opt.attr, opt.code, isTotal), stats, reportBase, decimals));
         });
         tbody.appendChild(tr);
       });
@@ -613,10 +743,11 @@ function rrInit() {
     return pivot;
   }
   function renderGrouped(tableEl, sdata, presentation, sort, onSort) {
-    var pivot = pivotGrouped(sdata.rows, sdata.overall_rows, presentation, sdata.report_base);
+    var base = presentation.percent_base || sdata.report_base;
+    var pivot = pivotGrouped(sdata.rows, sdata.overall_rows, presentation, base);
     var stats = (presentation.stats && presentation.stats.length) ? presentation.stats : constants.default_cell_stats;
     renderGroupedTable(tableEl, pivot, stats, !!presentation.show_code,
-      presentation.orientation || "columns", sdata.report_base, sort, onSort);
+      presentation.orientation || "columns", base, presentation.pct_decimals, sort, onSort);
     return pivot;
   }
 
@@ -689,8 +820,68 @@ function rrInit() {
     container.appendChild(chipsRow);
   }
 
+  function addNumber(row, labelText, value, min, max, onChange) {
+    var label = document.createElement("label");
+    label.className = "rr-field";
+    label.appendChild(document.createTextNode(labelText));
+    var input = document.createElement("input");
+    input.type = "number";
+    input.min = String(min);
+    input.max = String(max);
+    input.value = String(value);
+    input.className = "rr-num";
+    input.addEventListener("input", function () {
+      var v = parseInt(input.value, 10);
+      if (Number.isNaN(v) || v < min || v > max) { return; }  // ignore mid-edit states
+      onChange(v);
+    });
+    label.appendChild(input);
+    row.appendChild(label);
+    return input;
+  }
+  // Codes are offered with their labels: "-1" is a real "Other" option in some
+  // exports, so which code means N/A is a per-survey judgement, not a constant.
+  function addHidePicker(container, codes, selected, onChange) {
+    if (!codes || !codes.length) { return function () {}; }
+    var details = document.createElement("details");
+    details.className = "rr-hide";
+    var summary = document.createElement("summary");
+    details.appendChild(summary);
+    var body = document.createElement("div");
+    body.className = "rr-chips";
+    details.appendChild(body);
+    container.appendChild(details);
+
+    var chosen = {};
+    selected.forEach(function (c) { chosen[String(c)] = true; });
+    function current() {
+      return codes.map(function (c) { return c.code; }).filter(function (c) { return chosen[c]; });
+    }
+    function syncSummary() {
+      var n = current().length;
+      summary.textContent = n ? "Hidden rows (" + n + ")" : "Hide rows";
+    }
+    codes.forEach(function (c) {
+      var label = document.createElement("label");
+      var input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = !!chosen[c.code];
+      input.addEventListener("change", function () {
+        chosen[c.code] = input.checked;
+        syncSummary();
+        onChange(current());
+      });
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(c.code + (c.label ? " \\u2014 " + c.label : "")));
+      label.title = "Hide this response from the table";
+      body.appendChild(label);
+    });
+    syncSummary();
+    return syncSummary;
+  }
+
   // ---- statistic definitions ----
-  function buildDefsPanel(container, reportBase, kind, getStats) {
+  function buildDefsPanel(container, getBase, kind, getStats) {
     var details = document.createElement("details");
     details.className = "rr-defs";
     var summary = document.createElement("summary");
@@ -704,6 +895,7 @@ function rrInit() {
     // "n ÷ Valid n" is opaque if Valid n isn't itself a column.
     function statsToDefine() {
       var out = [];
+      var reportBase = getBase();
       getStats().forEach(function (stat) {
         if (out.indexOf(stat) === -1) { out.push(stat); }
         var field = statField(stat, reportBase);
@@ -716,6 +908,7 @@ function rrInit() {
     }
 
     function refresh() {
+      var reportBase = getBase();
       body.innerHTML = "";
       var table = document.createElement("table");
       var tbody = document.createElement("tbody");
@@ -736,6 +929,10 @@ function rrInit() {
 
       var notes = [
         "\\u2605 marks the column matching this question's reporting base.",
+        "When rows are hidden, Valid n becomes the number who chose one of the " +
+          "responses still shown and Valid % is recomputed against it; Eligible % " +
+          "and Total % are unchanged. On multi-select questions one respondent can " +
+          "pick several options, so that count isn't derivable and Valid n is left as is.",
         "The Total row sums n and the percentages across the response options shown; " +
           "the base counts (Valid/Eligible/Total n) are held constant, not summed. " +
           "Percentages can exceed 100% for multi-select questions.",
@@ -764,13 +961,19 @@ function rrInit() {
     for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) { return false; } }
     return true;
   }
+  // Render-time presentation keys. percent_base is deliberately absent: like
+  // sort_by it is stamped into the CSV by the frequencies stage, so it belongs
+  // in the "needs a re-run" block rather than here.
   function buildDiff(kind, effective, edited) {
     var keys = kind === "flat"
-      ? ["show_code", "stats", "response_total"]
-      : ["show_code", "orientation", "overall", "response_total", "stats"];
+      ? ["show_code", "stats", "response_total", "pct_decimals", "hide_codes"]
+      : ["show_code", "orientation", "overall", "response_total", "stats", "pct_decimals", "hide_codes"];
+    var listKeys = { stats: true, hide_codes: true };
     var diff = {};
     keys.forEach(function (key) {
-      var same = key === "stats" ? arraysEqual(effective[key], edited[key]) : effective[key] === edited[key];
+      var same = listKeys[key]
+        ? arraysEqual(effective[key], edited[key])
+        : effective[key] === edited[key];
       if (!same) { diff[key] = edited[key]; }
     });
     return diff;
@@ -876,9 +1079,15 @@ function rrInit() {
     details.appendChild(sortNote);
 
     function refresh() {
-      var shown = setPres(buildDiff(kind, effective, getEdited()));
+      var edited = getEdited();
+      var shown = setPres(buildDiff(kind, effective, edited));
       var sc = sortConfig(getSort(), getAxis());
-      shown = setSort(sc.keys) || shown;
+      // percent_base joins the sort keys: it is stamped into the CSV by the
+      // frequencies stage, so it carries the same "re-run to apply" caveat.
+      var reRun = {};
+      if (edited.percent_base !== effective.percent_base) { reRun.percent_base = edited.percent_base; }
+      for (var k in sc.keys) { reRun[k] = sc.keys[k]; }
+      shown = setSort(reRun) || shown;
       sortNote.textContent = sc.note;
       empty.style.display = shown ? "none" : "";
     }
@@ -896,18 +1105,25 @@ function rrInit() {
       show_code: !!pres.show_code,
       stats: (pres.stats && pres.stats.length) ? pres.stats.slice() : constants.default_flat_stats.slice(),
       response_total: pres.response_total || false,
+      pct_decimals: pres.pct_decimals === undefined ? 2 : pres.pct_decimals,
+      hide_codes: (pres.hide_codes || []).slice(),
+      percent_base: sdata.report_base,
     };
     var state = {
       show_code: effective.show_code,
       stats: effective.stats.slice(),
       response_total: effective.response_total,
+      pct_decimals: effective.pct_decimals,
+      hide_codes: effective.hide_codes.slice(),
+      percent_base: effective.percent_base,
       sort: null,
     };
     var hasAttr = hasAttributeIn(sdata.rows);
+    registerDecimals(function (d) { state.pct_decimals = d; rerender(); }, function () { return state.pct_decimals; });
 
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
-      renderFlatTable(tableEl, sdata.rows, sdata.report_base, state, state.sort, onSort);
+      renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort);
       refreshDefs();
       refreshSnippet();
     }
@@ -916,17 +1132,26 @@ function rrInit() {
     row1.className = "rr-row";
     addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
     addSelect(row1, "Total row", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
+    addSelect(row1, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; rerender(); });
+    addNumber(row1, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
+      function (v) { state.pct_decimals = v; syncDecimals(v); rerender(); });
     toolsEl.appendChild(row1);
 
     var row2 = document.createElement("div");
     row2.className = "rr-row";
-    addStatChips(row2, constants.stat_order, state.stats, sdata.report_base, function (stats) { state.stats = stats; rerender(); });
+    addStatChips(row2, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); });
     toolsEl.appendChild(row2);
+    addHidePicker(toolsEl, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
 
-    var refreshDefs = buildDefsPanel(toolsEl, sdata.report_base, "flat", function () { return state.stats; });
+    var refreshDefs = buildDefsPanel(toolsEl, function () { return state.percent_base; }, "flat",
+      function () { return state.stats; });
     var refreshSnippet = buildSnippetPanel(toolsEl, "flat", sdata.question_id, [], effective,
       function () {
-        return { show_code: state.show_code, stats: state.stats, response_total: state.response_total };
+        return {
+          show_code: state.show_code, stats: state.stats, response_total: state.response_total,
+          pct_decimals: state.pct_decimals, hide_codes: state.hide_codes,
+          percent_base: state.percent_base,
+        };
       },
       function () { return state.sort; },
       function () {
@@ -956,6 +1181,9 @@ function rrInit() {
       overall: hasOverall ? (pres.overall || false) : false,
       response_total: pres.response_total || false,
       stats: (pres.stats && pres.stats.length) ? pres.stats.slice() : constants.default_cell_stats.slice(),
+      pct_decimals: pres.pct_decimals === undefined ? 2 : pres.pct_decimals,
+      hide_codes: (pres.hide_codes || []).slice(),
+      percent_base: sdata.report_base,
     };
     var state = {
       show_code: effective.show_code,
@@ -963,11 +1191,15 @@ function rrInit() {
       overall: effective.overall,
       response_total: effective.response_total,
       stats: effective.stats.slice(),
+      pct_decimals: effective.pct_decimals,
+      hide_codes: effective.hide_codes.slice(),
+      percent_base: effective.percent_base,
       sort: null,
     };
     var metaEl = toolsEl.previousElementSibling;
     if (!metaEl || !metaEl.classList || !metaEl.classList.contains("meta")) { metaEl = null; }
     var lastPivot = null;
+    registerDecimals(function (d) { state.pct_decimals = d; rerender(); }, function () { return state.pct_decimals; });
 
     // Switching orientation swaps which axis the rows are, so a sort key from the
     // previous orientation no longer addresses a real column.
@@ -975,7 +1207,7 @@ function rrInit() {
     function rerender() {
       lastPivot = renderGrouped(tableEl, sdata, state, state.sort, onSort);
       if (metaEl) {
-        var statNames = state.stats.map(function (s) { return statLabel(s, sdata.report_base); }).join(", ");
+        var statNames = state.stats.map(function (s) { return statLabel(s, state.percent_base); }).join(", ");
         metaEl.textContent = "Grouped by " + sdata.group_keys + " \\u00b7 orientation: " + state.orientation +
           " \\u00b7 cells show " + statNames + " (within group)";
       }
@@ -1001,20 +1233,27 @@ function rrInit() {
       overallSelect.title = "No ungrouped table was generated for this question, so there is no Overall data to show.";
     }
     addSelect(row2, "Response total", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
+    addSelect(row2, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; rerender(); });
+    addNumber(row2, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
+      function (v) { state.pct_decimals = v; syncDecimals(v); rerender(); });
     toolsEl.appendChild(row2);
 
     var row3 = document.createElement("div");
     row3.className = "rr-row";
-    addStatChips(row3, constants.stat_order, state.stats, sdata.report_base, function (stats) { state.stats = stats; rerender(); });
+    addStatChips(row3, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); });
     toolsEl.appendChild(row3);
+    addHidePicker(toolsEl, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
 
-    var refreshDefs = buildDefsPanel(toolsEl, sdata.report_base, "grouped", function () { return state.stats; });
+    var refreshDefs = buildDefsPanel(toolsEl, function () { return state.percent_base; }, "grouped",
+      function () { return state.stats; });
     var groupByList = sdata.group_keys ? sdata.group_keys.split(" | ") : [];
     var refreshSnippet = buildSnippetPanel(toolsEl, "grouped", sdata.question_id, groupByList, effective,
       function () {
         return {
           show_code: state.show_code, orientation: state.orientation, overall: state.overall,
           response_total: state.response_total, stats: state.stats,
+          pct_decimals: state.pct_decimals, hide_codes: state.hide_codes,
+          percent_base: state.percent_base,
         };
       },
       function () { return state.sort; },
@@ -1031,7 +1270,7 @@ function rrInit() {
               if (state.sort.key.kind === "code") { return opt.code; }
               if (state.sort.key.kind === "label") { return opt.label; }
               var gcode = String(state.sort.key.stat).slice(4);
-              return cellSortValue(lastPivot.data(gcode, opt.attr, opt.code, false), state.stats, sdata.report_base);
+              return cellSortValue(lastPivot.data(gcode, opt.attr, opt.code, false), state.stats, state.percent_base);
             }).filter(function (opt) { return !isAggregateOpt(opt); })
               .map(function (opt) { return opt.code || ""; });
           },
@@ -1045,6 +1284,28 @@ function rrInit() {
     if (el.getAttribute("data-kind") === "grouped") { initGroupedSection(el, slug); }
     else { initFlatSection(el, slug); }
   });
+
+  // Report-level control, wired after the sections so every setter is registered.
+  var globalHost = document.getElementById("rr-global");
+  if (globalHost && decimalsSubscribers.length) {
+    var row = document.createElement("div");
+    row.className = "rr-row";
+    var seed = decimalsSubscribers[0].get();
+    var uniform = decimalsSubscribers.every(function (s) { return s.get() === seed; });
+    globalDecimalsInput = addNumber(row, "Decimal places on all percentages",
+      uniform ? seed : "", 0, constants.pct_decimals_max, function (v) {
+        decimalsSubscribers.forEach(function (s) { s.set(v); });
+      });
+    if (!uniform) {
+      globalDecimalsInput.placeholder = "mixed";
+      globalDecimalsInput.title = "Tables currently differ; setting this applies to all of them.";
+    }
+    var note = document.createElement("span");
+    note.className = "rr-note";
+    note.textContent = "Each table can override this in its own controls.";
+    row.appendChild(note);
+    globalHost.appendChild(row);
+  }
 }
 
 if (document.readyState === "loading") {
@@ -1101,6 +1362,11 @@ def _render_question_section(
     show_code = presentation.get("show_code", True)
     stats = presentation.get("stats") or _DEFAULT_FLAT_STATS
     response_total = presentation.get("response_total", False)
+    decimals = presentation.get("pct_decimals", 2)
+    all_rows = rows
+    rows = _apply_hidden(rows, presentation.get("hide_codes") or [])
+    if not rows:  # every option hidden; fall back to the unfiltered table
+        rows = all_rows
     has_attribute = any((r.get("attribute") or "").strip() for r in rows)
     featured = _PCT_FIELD.get(report_base)
 
@@ -1117,7 +1383,7 @@ def _render_question_section(
 
     def _row_html(label_cells: str, datarow: dict) -> str:
         cells = label_cells + "".join(
-            _cell_html(datarow, [stat], report_base) for stat in stats
+            _cell_html(datarow, [stat], report_base, decimals) for stat in stats
         )
         return f"<tr>{cells}</tr>"
 
@@ -1154,7 +1420,9 @@ def _render_question_section(
             "kind": "flat",
             "question_id": question_id,
             "report_base": report_base,
-            "rows": rows,
+            # Unfiltered, so the browser can re-apply or undo hide_codes itself.
+            "rows": all_rows,
+            "codes": _code_choices(all_rows),
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -1197,6 +1465,11 @@ def _render_grouped_section(
     orientation = presentation.get("orientation", "columns")
     overall_opt = presentation.get("overall", False)
     response_total = presentation.get("response_total", False)
+    decimals = presentation.get("pct_decimals", 2)
+    hide_codes = presentation.get("hide_codes") or []
+    # Kept unfiltered for the embedded blob, so the browser can undo hiding.
+    all_rows = rows
+    all_overall_rows = overall_rows
 
     # Per-group row lists (in appearance order) and their base sizes.
     group_rows: dict[str, list[dict]] = {}
@@ -1207,6 +1480,13 @@ def _render_grouped_section(
             group_rows[gc] = []
             group_order.append(gc)
         group_rows[gc].append(r)
+    if hide_codes:
+        # Each group column is its own little table, so Valid n rebases within
+        # the group rather than across the crosstab.
+        group_rows = {gc: (_apply_hidden(rs, hide_codes) or rs) for gc, rs in group_rows.items()}
+        if overall_rows:
+            overall_rows = _apply_hidden(overall_rows, hide_codes) or overall_rows
+        rows = [r for gc in group_order for r in group_rows[gc]]
 
     # Group axis: (code, label, base_n). Optionally inject an Overall level.
     groups = [
@@ -1270,7 +1550,7 @@ def _render_grouped_section(
             cells = f"<td>{_group_header(glabel, gbase)}</td>"
             for attr, code, _label in resp_axis:
                 is_total = attr == "__total__"
-                cells += _cell_html(_data(gcode, attr, code, is_total), stats, report_base)
+                cells += _cell_html(_data(gcode, attr, code, is_total), stats, report_base, decimals)
             body.append(f"<tr>{cells}</tr>")
     else:
         # Rows = response options; columns = group levels (default).
@@ -1288,7 +1568,7 @@ def _render_grouped_section(
             lead += f"<td>{'<strong>Total</strong>' if is_total else _esc(label)}</td>"
             cells = lead
             for gcode, _glabel, _gbase in groups:
-                cells += _cell_html(_data(gcode, attr, code, is_total), stats, report_base)
+                cells += _cell_html(_data(gcode, attr, code, is_total), stats, report_base, decimals)
             body.append(f"<tr>{cells}</tr>")
 
     badge = '<span class="badge">conditional</span>' if conditional else ""
@@ -1304,8 +1584,10 @@ def _render_grouped_section(
             "question_id": question_id,
             "report_base": report_base,
             "group_keys": group_keys,
-            "rows": rows,
-            "overall_rows": overall_rows or None,
+            # Unfiltered, so the browser can re-apply or undo hide_codes itself.
+            "rows": all_rows,
+            "overall_rows": all_overall_rows or None,
+            "codes": _code_choices(all_rows),
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -1424,6 +1706,7 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         f"<h1>Qualtrics Frequency Report</h1>"
         f'<div class="meta">Generated {generated}</div>'
         f"{summary}"
+        f'<div class="rr-tools" id="rr-global"></div>'
         f"<nav><h2>Questions</h2><ol>{index_items}</ol></nav>"
         f"{sections}{orphan}"
         f"{_constants_blob()}"

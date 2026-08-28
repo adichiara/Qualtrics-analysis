@@ -200,7 +200,12 @@ PRESENTATION_DEFAULTS = {
     "overall": False,           # False | "before" | "after"
     "response_total": False,    # False | "before" | "after"
     "stats": None,              # None -> renderer default
+    "pct_decimals": 2,          # decimal places on displayed percentages
+    "hide_codes": [],           # response codes to omit from the table (e.g. N/A)
 }
+# Percentages are stored full-precision in the CSV and rounded only for display,
+# so this is a pure report-layer setting.
+PCT_DECIMALS_MAX = 6
 
 
 def _is_groupable(mapping: dict[str, Any]) -> bool:
@@ -276,6 +281,13 @@ def _config_reference() -> dict[str, str]:
         "percent_base": f"{pct_opts} - featured denominator (valid=answered, eligible=shown per display logic, total=all respondents)",
         "show_code": "true|false - show the response-code column in the report",
         "stats": f"list from: {stat_opts} (omit/empty = report default)",
+        "pct_decimals": f"0-{PCT_DECIMALS_MAX} - decimal places on displayed percentages (default 2)",
+        "hide_codes": (
+            "list of response codes to omit from the table, e.g. [\"-1\"] for an N/A option. "
+            "Valid n (and Valid %) rebase onto the responses still shown; Eligible/Total % are "
+            "unchanged. Rebasing is skipped for multi-select questions, where respondents can "
+            "pick several options so the shown-response count is not derivable from the table."
+        ),
         "tables": (
             "list of breakout tables, e.g. [{\"group_by\": [\"Q1.9\"], \"orientation\": \"columns\", "
             "\"overall\": false, \"response_total\": false}]. Omit for a single overall table. "
@@ -303,6 +315,14 @@ def _resolve_presentation(cfg: dict, spec: dict) -> dict:
     if out["stats"] is not None:
         cleaned = [s for s in out["stats"] if s in STAT_KEYS]
         out["stats"] = cleaned or None
+    try:
+        out["pct_decimals"] = min(max(int(out["pct_decimals"]), 0), PCT_DECIMALS_MAX)
+    except (TypeError, ValueError):
+        out["pct_decimals"] = PRESENTATION_DEFAULTS["pct_decimals"]
+    # Codes are compared as strings against response_code, which the CSV carries
+    # as text ("-1", "99"), so normalize whatever the config supplies.
+    hide = out["hide_codes"]
+    out["hide_codes"] = [str(c).strip() for c in hide] if isinstance(hide, list) else []
     return out
 
 

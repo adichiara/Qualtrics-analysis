@@ -13,6 +13,7 @@ from typing import Any
 
 from .frequencies import (
     MULTI_SELECTORS,
+    PCT_DECIMALS_MAX,
     PERCENT_BASES,
     SORT_BY_VALUES,
     STAT_KEYS,
@@ -29,10 +30,13 @@ TEXT_MODES = {"skip", "frequency_text", "summarize_later"}
 KNOWN_QUESTION_KEYS = {
     "include", "sort_by", "frequency_mode", "percent_base", "response_order",
     "text_entry_columns", "tables", "show_code", "orientation", "overall",
-    "response_total", "stats",
+    "response_total", "stats", "pct_decimals", "hide_codes",
 }
 # Options honored on an individual table spec.
-KNOWN_TABLE_KEYS = {"group_by", "show_code", "orientation", "overall", "response_total", "stats"}
+KNOWN_TABLE_KEYS = {
+    "group_by", "show_code", "orientation", "overall", "response_total", "stats",
+    "pct_decimals", "hide_codes",
+}
 # Keys that only take effect at the question level; ignored if put on a table spec.
 TABLE_IGNORED_KEYS = {
     "percent_base", "sort_by", "response_order", "frequency_mode", "include",
@@ -92,6 +96,15 @@ def _check_enums(block: dict[str, Any], where: str, errors: list[Issue]) -> None
             bad = [s for s in stats if not _safe_in(s, STAT_KEYS)]
             if bad:
                 err(f"unknown stats {bad} (allowed: {sorted(STAT_KEYS)})")
+    if "pct_decimals" in block:
+        dec = block["pct_decimals"]
+        # bool is an int subclass; true/false here is a mistake worth naming.
+        if isinstance(dec, bool) or not isinstance(dec, int):
+            err("pct_decimals must be a whole number")
+        elif not 0 <= dec <= PCT_DECIMALS_MAX:
+            err(f"pct_decimals must be between 0 and {PCT_DECIMALS_MAX}")
+    if "hide_codes" in block and not isinstance(block["hide_codes"], list):
+        err("hide_codes must be a list of response codes, e.g. [\"-1\"]")
 
 
 def _check_block(
