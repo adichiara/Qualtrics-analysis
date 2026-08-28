@@ -2,6 +2,5 @@
 
 from qualtrics_pipeline.frequencies import main
 
-
 if __name__ == "__main__":
     main()
