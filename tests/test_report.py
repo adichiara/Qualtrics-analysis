@@ -171,7 +171,11 @@ def test_generate_report_escapes_html(tmp_path) -> None:
     ])
     html = generate_html_report(run_dir).read_text(encoding="utf-8")
     assert "A &amp; B &lt;script&gt;" in html
-    assert "<script>" not in html.split("<style>")[1]  # not injected into body
+    # The raw, unescaped attacker string must never appear anywhere in the
+    # document -- not in the visible table markup, and not inside the embedded
+    # JSON data blob either (there '<'/'>'/'&' are \uXXXX-escaped rather than
+    # HTML-entity-escaped, so the raw substring shouldn't appear there either).
+    assert "A & B <script>" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +214,14 @@ def test_stats_percent_only(tmp_path) -> None:
     html = generate_html_report(
         _flat_run(tmp_path, {"stats": ["pct"], "show_code": False})
     ).read_text()
-    # Only one stat column (the featured %); n / Valid n columns absent.
-    assert "<th>Label</th>" in html
-    assert "<th class=\"num\">n</th>" not in html
-    assert "Valid n" not in html
+    # Only one stat column (the featured %); n / Valid n columns absent from the
+    # rendered table. (The shared JS constants blob at the end of the document
+    # legitimately lists every stat's label, for the browser-side stat-toggle
+    # chips to offer -- exclude it here, it's not part of the rendered table.)
+    body = html.split('id="rr-constants"')[0]
+    assert "<th>Label</th>" in body
+    assert "<th class=\"num\">n</th>" not in body
+    assert "Valid n" not in body
 
 
 def test_response_total_row(tmp_path) -> None:
@@ -263,3 +271,57 @@ def test_grouped_orientation_rows(tmp_path) -> None:
     assert "<th>Group</th>" in html
     assert "Uniform A" in html and "Uniform B" in html
     assert "orientation: rows" in html
+
+
+def test_grouped_response_total_shows_aggregated_values(tmp_path) -> None:
+    """Regression test: the Total row in a crosstab must show the summed n within
+    each group column (20 for Uniform A, 15 for Uniform B), not a placeholder dash."""
+    html = generate_html_report(
+        _grouped_run(tmp_path, {"response_total": "after", "stats": ["n"]})
+    ).read_text()
+    tbody = html.split('id="QID2__by__Q1.9"')[1].split("<tbody>")[1].split("</tbody>")[0]
+    assert "&mdash;" not in tbody
+    assert "<strong>Total</strong>" in tbody
+    total_row = tbody.split("<strong>Total</strong>")[1]
+    assert ">20<" in total_row
+    assert ">15<" in total_row
+
+
+def test_grouped_response_total_rows_orientation(tmp_path) -> None:
+    html = generate_html_report(
+        _grouped_run(tmp_path, {"orientation": "rows", "response_total": "after", "stats": ["n"]})
+    ).read_text()
+    tbody = html.split('id="QID2__by__Q1.9"')[1].split("<tbody>")[1].split("</tbody>")[0]
+    assert "&mdash;" not in tbody
+
+
+# ---------------------------------------------------------------------------
+# Interactive scaffolding (embedded data blobs, control-bar placeholders)
+# ---------------------------------------------------------------------------
+
+def test_interactive_scaffolding_embedded(tmp_path) -> None:
+    html = generate_html_report(_flat_run(tmp_path)).read_text()
+    assert 'id="rr-constants"' in html
+    assert '<div class="rr-tools" data-kind="flat" data-slug="QID2">' in html
+    assert 'id="QID2-data"' in html
+    assert 'id="QID2-table"' in html
+    assert "function rrInit" in html
+    # Constants blob carries the shared enums the JS port needs.
+    assert '"default_flat_stats"' in html
+    assert '"stat_labels"' in html
+
+
+def test_grouped_scaffolding_overall_rows_null_when_absent(tmp_path) -> None:
+    """When a question has no ungrouped/overall table, the embedded overall_rows
+    must be explicit JSON null (not just omitted) so the browser-side Overall
+    control can be reliably disabled rather than silently failing."""
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2__by__Q1.9_frequencies.csv", [
+        _grouped_row("1", "Uniform A", "1", "Schofield", "10", "20", "50.0"),
+        _grouped_row("2", "Uniform B", "1", "Schofield", "3", "15", "20.0"),
+    ])
+    html = generate_html_report(run_dir).read_text()
+    blob = html.split('id="QID2__by__Q1.9-data"')[1].split("</script>")[0]
+    assert '"overall_rows":null' in blob or '"overall_rows": null' in blob
