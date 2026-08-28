@@ -158,7 +158,7 @@ def reset_question(config: dict[str, Any], qkey: str) -> None:
 def list_table_specs(config: dict[str, Any], qkey: str) -> list[dict[str, Any]]:
     """The effective list of table specs (matching frequencies._table_specs)."""
     tables = config.get("questions", {}).get(qkey, {}).get("tables")
-    return tables if tables else [{"group_by": []}]
+    return tables or [{"group_by": []}]
 
 
 def add_table_spec(
