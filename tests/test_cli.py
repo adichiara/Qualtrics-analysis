@@ -114,7 +114,7 @@ def _fixture_run(tmp_path) -> Path:
 def test_action_init_config_writes_default_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     run_dir = _fixture_run(tmp_path)
-    lines, print_fn = _capture()
+    _lines, print_fn = _capture()
     input_fn = FakeInput([str(run_dir), str(run_dir / "cfg.json")])
     state: dict = {}
 
@@ -132,7 +132,7 @@ def test_action_init_config_respects_no_overwrite(tmp_path, monkeypatch):
     run_dir = _fixture_run(tmp_path)
     cfg_path = run_dir / "cfg.json"
     cfg_path.write_text(json.dumps({"defaults": {}, "questions": {"sentinel": True}}), encoding="utf-8")
-    lines, print_fn = _capture()
+    _lines, print_fn = _capture()
     input_fn = FakeInput([str(run_dir), str(cfg_path), "n"])  # decline overwrite
     state: dict = {}
 
@@ -179,7 +179,7 @@ def test_action_run_analysis_produces_report(tmp_path, monkeypatch):
     cmap = json.loads((run_dir / "column_map.json").read_text(encoding="utf-8"))
     cfg_path.write_text(json.dumps(build_default_config(cmap)), encoding="utf-8")
 
-    lines, print_fn = _capture()
+    _lines, print_fn = _capture()
     input_fn = FakeInput([str(run_dir), str(cfg_path), "n"])  # decline opening browser
     state: dict = {}
 
@@ -363,7 +363,7 @@ def test_configure_question_add_breakout(tmp_path, monkeypatch):
         "8",          # question menu: Back
         "done",
     ])
-    lines, print_fn = _capture()
+    _lines, print_fn = _capture()
     state: dict = {}
 
     cli.action_configure_question(state, inputs, print_fn)
@@ -388,7 +388,7 @@ def test_configure_question_stats_and_reset(tmp_path, monkeypatch):
         "8",       # Back
         "done",
     ])
-    lines, print_fn = _capture()
+    _lines, print_fn = _capture()
     state: dict = {}
 
     cli.action_configure_question(state, inputs, print_fn)
@@ -427,7 +427,7 @@ def test_configure_question_ambiguous_query_disambiguates(tmp_path, monkeypatch)
         "8",        # Back
         "done",
     ])
-    lines, print_fn = _capture()
+    _lines, print_fn = _capture()
     state: dict = {}
 
     cli.action_configure_question(state, inputs, print_fn)

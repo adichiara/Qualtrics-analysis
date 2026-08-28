@@ -4,7 +4,6 @@ from qualtrics_pipeline.survey_logic import (
     parse_display_logic,
 )
 
-
 # A Qualtrics-shaped DisplayLogic: show if QID2 choice 1 Is Selected.
 _SINGLE = {
     "0": {

@@ -128,7 +128,7 @@ def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) 
             response_labels = {"0": "Not selected", "1": "Selected"}
             for cid, cnode in choices.items():
                 recode = str(recodes.get(cid, cid))
-                if col.endswith(f"_{recode}") or col.endswith(f"_{cid}") or col.endswith(f"_{cid}_TEXT"):
+                if col.endswith((f"_{recode}", f"_{cid}", f"_{cid}_TEXT")):
                     sub_question_text = _extract_display(cnode)
                     parent_choice_code = recode
                     parent_choice_label = _extract_display(cnode)
@@ -138,7 +138,7 @@ def _map_question_column(col: str, survey_id: str, qid: str, q: dict[str, Any]) 
             }
             for cid, cnode in choices.items():
                 recode = str(recodes.get(cid, cid))
-                if col.endswith(f"_{cid}_TEXT") or col.endswith(f"_{recode}_TEXT"):
+                if col.endswith((f"_{cid}_TEXT", f"_{recode}_TEXT")):
                     parent_choice_code = recode
                     parent_choice_label = _extract_display(cnode)
                     sub_question_text = _extract_display(cnode)
@@ -187,7 +187,7 @@ def build_column_map(survey_id: str, columns: list[str], questions_meta: dict[st
     for col in columns:
         matched = None
         for tag, pair in tagged.items():
-            if col == tag or col.startswith(f"{tag}_") or col.startswith(f"{tag}#") or col.startswith(f"{tag}."):
+            if col == tag or col.startswith((f"{tag}_", f"{tag}#", f"{tag}.")):
                 matched = pair
                 break
         if matched is None:
@@ -346,8 +346,8 @@ def run_export(survey_id: str, outdir: str | Path, privacy_mode: str = "deidenti
         artifacts = ["responses_raw.csv", *artifacts]
 
     data_file = "responses_raw.csv" if privacy_mode == "raw" else "responses_clean.csv"
-    rows_output = int(len(raw_df)) if privacy_mode == "raw" else int(len(clean_df))
-    manifest = build_run_manifest(survey_id, privacy_mode, int(len(raw_df)), rows_output, data_file, list(source_df.columns), artifacts)
+    rows_output = len(raw_df) if privacy_mode == "raw" else len(clean_df)
+    manifest = build_run_manifest(survey_id, privacy_mode, len(raw_df), rows_output, data_file, list(source_df.columns), artifacts)
     (outdir / "run_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return outdir
 

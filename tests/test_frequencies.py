@@ -7,7 +7,6 @@ from qualtrics_pipeline.frequencies import (
     run_frequency_analysis,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers shared by sort-order tests
 # ---------------------------------------------------------------------------
@@ -649,7 +648,7 @@ def test_rerun_with_narrower_only_clears_stale_output_files(tmp_path) -> None:
     open_text_outputs/*.csv) behind -- the report globs the whole directory,
     so stale files would make an excluded question reappear (Codex review,
     PR #9)."""
-    rows, column_map = _two_question_setup()
+    _rows, column_map = _two_question_setup()
     data_path = tmp_path / "data.csv"
     data_path.write_text("Q1,Q2\n1,1\n2,2\n", encoding="utf-8")
     cmap_path = tmp_path / "cm.json"
