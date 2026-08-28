@@ -1,4 +1,4 @@
-from qualtrics_pipeline.export import build_column_map, build_run_manifest, _strip_html
+from qualtrics_pipeline.export import _strip_html, build_column_map, build_run_manifest
 
 
 def test_build_column_map_multi_answer_mc_binary_labels() -> None:

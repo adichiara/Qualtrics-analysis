@@ -1216,7 +1216,7 @@ def _render_grouped_section(
     overall_rows = overall_rows or []
     if overall_opt and overall_rows:
         ov = ("__overall__", "Overall", overall_rows[0].get(n_field, ""))
-        groups = [ov] + groups if overall_opt == "before" else groups + [ov]
+        groups = [ov, *groups] if overall_opt == "before" else [*groups, ov]
 
     # Response axis: (attr, code, label). First-seen across grouped (then overall).
     opts: list[tuple[str, str, str]] = []
@@ -1245,9 +1245,9 @@ def _render_grouped_section(
     TOTAL = ("__total__", "", "Total")
     resp_axis = list(opts)
     if response_total == "before":
-        resp_axis = [TOTAL] + resp_axis
+        resp_axis = [TOTAL, *resp_axis]
     elif response_total == "after":
-        resp_axis = resp_axis + [TOTAL]
+        resp_axis = [*resp_axis, TOTAL]
 
     def _resp_label(attr: str, code: str, label: str) -> str:
         text = "Total" if attr == "__total__" else label
@@ -1305,7 +1305,7 @@ def _render_grouped_section(
             "report_base": report_base,
             "group_keys": group_keys,
             "rows": rows,
-            "overall_rows": overall_rows if overall_rows else None,
+            "overall_rows": overall_rows or None,
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -1356,7 +1356,7 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         if not rows:
             continue
         stem = csv_path.stem
-        slug = stem[: -len("_frequencies")] if stem.endswith("_frequencies") else stem
+        slug = stem.removesuffix("_frequencies")
         qkey = rows[0].get("question_key") or slug
         is_grouped = bool((rows[0].get("group_keys") or "").strip())
         if not is_grouped:
@@ -1399,7 +1399,9 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         if qkey not in rendered_qkeys
     )
 
-    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # astimezone() attaches the local offset: same wall-clock time as before, but
+    # tz-aware, and %Z names the zone so a shared report's timestamp is unambiguous.
+    generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     summary = (
         f'<div class="summary"><strong>{len(blocks)}</strong> question table(s) '
         f"from <code>{_esc(data_path)}</code>.<br>"

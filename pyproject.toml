@@ -36,14 +36,38 @@ line-length = 100
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# "Get Qualtrics Survey.py" is the original standalone exporter, superseded by
+# the qualtrics_pipeline package: it is referenced nowhere, ships outside the
+# installed package, and is still CRLF-encoded. Linting it produces churn in
+# dead code rather than signal.
+extend-exclude = ["Get Qualtrics Survey.py"]
 
 [tool.ruff.lint]
 # Pin the rule set explicitly. Ruff's *default* selection is not stable across
 # releases -- 0.16 widened it well beyond the historical E4/E7/E9/F, which turned
-# CI red on code nobody had touched (30 findings across I, RUF, PIE, BLE, DTZ,
-# EXE, FURB and UP). Naming the set here means a ruff upgrade can no longer
-# change what CI enforces on its own. Adopting more rules is a deliberate edit.
-select = ["E4", "E7", "E9", "F"]
+# CI red on code nobody had touched. Naming the set here means a ruff upgrade can
+# no longer change what CI enforces on its own; adopting a rule is a deliberate
+# edit to this list.
+select = [
+  "E4", "E7", "E9",  # pycodestyle: imports, statements, syntax
+  "F",               # pyflakes
+  "I",               # isort: import ordering
+  "UP",              # pyupgrade: outdated idioms for target-version
+  "B",               # flake8-bugbear: likely bugs
+  "BLE",             # flake8-blind-except: except: / except Exception without use
+  "DTZ",             # flake8-datetimez: naive datetimes
+  "PIE",             # flake8-pie: redundant constructs
+  "RUF",             # ruff-specific
+  "FURB",            # refurb: modernizations
+  "EXE",             # flake8-executable: shebang / exec-bit agreement
+]
+ignore = [
+  # Ambiguous-unicode rules guard against homoglyph tricks, but here they only
+  # fire on deliberate typography in explanatory prose comments (en dashes in
+  # the base definitions, "x" in an arithmetic note). Rewriting those to ASCII
+  # would make the comments worse, not safer.
+  "RUF001", "RUF002", "RUF003",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

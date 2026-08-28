@@ -18,8 +18,9 @@ import json
 import os
 import subprocess
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 STATE_FILE = Path(".qualtrics_cli_state.json")
 DEFAULT_CONFIG_NAME = "qualtrics_frequency_config.json"
@@ -169,7 +170,9 @@ def action_export(state: dict, input_fn: InputFn, print_fn: PrintFn) -> None:
     except SystemExit as e:
         print_fn(f"Export failed: {e}")
         return
-    except Exception as e:  # network/API errors from QualtricsAPI/requests
+    except Exception as e:  # noqa: BLE001 - network/API errors from QualtricsAPI/requests
+        # Deliberately broad: the third-party client raises a wide, undocumented
+        # range, and the CLI should report it rather than show a traceback.
         print_fn(f"Export failed: {e}")
         return
 
@@ -304,7 +307,12 @@ def _edit_stats(config: dict, qkey: str, eff: dict, cmap: list[dict], input_fn: 
 
 
 def _manage_breakouts(config: dict, qkey: str, cmap: list[dict], input_fn: InputFn, print_fn: PrintFn) -> None:
-    from .question_config import add_table_spec, groupable_columns, list_table_specs, remove_table_spec
+    from .question_config import (
+        add_table_spec,
+        groupable_columns,
+        list_table_specs,
+        remove_table_spec,
+    )
 
     while True:
         tables = list_table_specs(config, qkey)
@@ -650,7 +658,8 @@ def main(input_fn: InputFn = input, print_fn: PrintFn = print) -> None:
         except (EOFError, KeyboardInterrupt):
             print_fn("\nGoodbye.")
             return
-        except Exception as e:  # keep the menu alive on unexpected errors
+        except Exception as e:  # noqa: BLE001 - keep the menu alive on unexpected errors
+            # Deliberately broad: one failing action must not kill the session.
             print_fn(f"Error: {e}")
 
 

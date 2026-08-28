@@ -317,7 +317,7 @@ _EMPTY_GROUP = {"group_keys": "", "group_codes": "", "group_labels": ""}
 def _group_level_sort_key(codes, gcols, by_col):
     """Order group levels by each grouping column's survey (label) order."""
     key = []
-    for gc, code in zip(gcols, codes):
+    for gc, code in zip(gcols, codes, strict=True):
         label_keys = list((by_col.get(gc, {}).get("response_labels") or {}).keys())
         idx = label_keys.index(code) if code in label_keys else len(label_keys)
         key.append((idx, _numeric_sort_key(code)))
@@ -505,7 +505,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
             for codes in sorted(level_rows, key=lambda c: _group_level_sort_key(c, gcols, by_col)):
                 glabels = [
                     (by_col[gc].get("response_labels") or {}).get(code, code)
-                    for gc, code in zip(gcols, codes)
+                    for gc, code in zip(gcols, codes, strict=True)
                 ]
                 group_cols = {
                     "group_keys": " | ".join(gcols),
@@ -636,7 +636,7 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         "table_presentation": {
             slug: meta["presentation"]
             for slug, meta in report_meta["table_specs"].items()
-            if slug in tables and tables[slug]
+            if tables.get(slug)
         },
         "output_files": [str(p) for p in outs],
     }
