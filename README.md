@@ -181,10 +181,26 @@ crosstabs — orientation and an Overall column/row) that re-renders that table
 instantly in the browser as you toggle it. Nothing you change there is saved
 automatically — it's for trying out different formats before committing to one.
 
-Open "Show config snippet" under a table's controls to see the exact JSON for
-your current toggle state; paste it into that question's block (or its `tables`
-entry, for a grouped table) in `qualtrics_frequency_config.json` to make the
-change permanent and reflected the next time anyone regenerates the report.
+Click any column header to sort by it: ascending, then descending, then back to
+the configured order. Aggregate rows stay put — the Total row and a grouped
+table's Overall row are pinned wherever their config option places them, and are
+never mixed into the sort.
+
+"Show statistic definitions" explains what each displayed column means and which
+denominator it uses, including the base counts a percentage divides by.
+
+Open "Show config snippet" to see the exact JSON for your current state. Two
+kinds of key can appear:
+
+- **Presentation keys** (`show_code`, `stats`, `orientation`, `overall`,
+  `response_total`) go in that question's block, or in its matching `tables`
+  entry for a grouped table. `report.py` applies these at render time, so
+  regenerating the report is enough.
+- **Sort keys** (`sort_by`, and `response_order` for a sort with no named mode)
+  always go in the question's block. These are applied by the frequencies stage
+  when it writes the CSVs, so **re-run the frequencies stage** for them to take
+  effect. Sorting a grouped table's group axis has no config equivalent and the
+  panel says so rather than emitting a key that would not work.
 
 Default frequency behavior skips unmapped, metadata, sensitive, and open-text columns unless config includes them explicitly.
 
