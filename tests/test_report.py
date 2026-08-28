@@ -351,3 +351,85 @@ def test_grouped_scaffolding_overall_rows_null_when_absent(tmp_path) -> None:
     html = generate_html_report(run_dir).read_text()
     blob = html.split('id="QID2__by__Q1.9-data"')[1].split("</script>")[0]
     assert '"overall_rows":null' in blob or '"overall_rows": null' in blob
+
+
+# ---------------------------------------------------------------------------
+# Decimal places, hidden rows, and the Valid n rebase
+# ---------------------------------------------------------------------------
+
+def _rebase_rows() -> list[dict]:
+    """60 A / 30 B / 10 N/A out of valid_n 100 (single-response: counts sum to 100)."""
+    return [
+        _base_row(response_code="1", response_label="A", n="60", valid_n="100",
+                  valid_pct="60.0", eligible_pct="60.0", total_pct="30.0", report_base="valid"),
+        _base_row(response_code="2", response_label="B", n="30", valid_n="100",
+                  valid_pct="30.0", eligible_pct="30.0", total_pct="15.0", report_base="valid"),
+        _base_row(response_code="-1", response_label="N/A", n="10", valid_n="100",
+                  valid_pct="10.0", eligible_pct="10.0", total_pct="5.0", report_base="valid"),
+    ]
+
+
+def _render(tmp_path, rows, presentation) -> str:
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", rows)
+    _write_manifest(run_dir, {"QID2": presentation})
+    html = generate_html_report(run_dir).read_text()
+    return html.split('id="QID2-table"')[1].split("</table>")[0]
+
+
+def test_pct_decimals_controls_displayed_precision(tmp_path) -> None:
+    rows = _rebase_rows()
+    assert "60.00%" in _render(tmp_path, rows, {"stats": ["valid_pct"]})
+    assert "60%" in _render(tmp_path / "b", rows, {"stats": ["valid_pct"], "pct_decimals": 0})
+    assert "60.0000%" in _render(tmp_path / "c", rows, {"stats": ["valid_pct"], "pct_decimals": 4})
+
+
+def test_hidden_rows_rebase_valid_n_only(tmp_path) -> None:
+    """Hiding a code makes Valid n mean "chose one of the responses shown", so it
+    and Valid % rebase; Eligible % and Total % are prevalence over people and
+    must not move."""
+    table = _render(tmp_path, _rebase_rows(), {
+        "stats": ["n", "valid_n", "valid_pct", "eligible_pct", "total_pct"],
+        "hide_codes": ["-1"], "show_code": False,
+    })
+    assert "N/A" not in table                 # row is gone
+    assert ">90<" in table                    # valid_n 100 -> 90
+    assert "66.67%" in table and "33.33%" in table   # 60/90 and 30/90
+    assert "60.00%" in table and "30.00%" in table   # eligible % unchanged
+    assert "15.00%" in table                  # total % unchanged
+
+
+def test_hidden_rows_skip_rebase_for_multi_select(tmp_path) -> None:
+    """Multi-select counts sum past valid_n, so the shown-response count is not
+    derivable from the table; the row is hidden but Valid n is left alone."""
+    rows = _rebase_rows()
+    rows[1]["n"] = "50"  # 60 + 50 + 10 = 120 > valid_n 100
+    table = _render(tmp_path, rows, {
+        "stats": ["n", "valid_n"], "hide_codes": ["-1"], "show_code": False,
+    })
+    assert "N/A" not in table
+    assert ">100<" in table and ">90<" not in table
+
+
+def test_hide_picker_choices_embedded_with_labels(tmp_path) -> None:
+    """The browser offers the codes actually present, with labels: "-1" is a real
+    "Other" option in some exports, so N/A can't be hardcoded."""
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", _rebase_rows())
+    blob = generate_html_report(run_dir).read_text().split('id="QID2-data"')[1].split("</script>")[0]
+    assert '"codes"' in blob
+    assert '"code": "-1"' in blob or '"code":"-1"' in blob
+    assert "N/A" in blob
+
+
+def test_base_n_not_offered_as_a_toggle() -> None:
+    """base_n resolves to whichever base is featured, which a crosstab already
+    prints in its group header and a flat table can name outright."""
+    from qualtrics_pipeline.report import _STAT_ORDER
+
+    assert "base_n" not in _STAT_ORDER
+    assert "pct" in _STAT_ORDER  # crosstabs default to it
