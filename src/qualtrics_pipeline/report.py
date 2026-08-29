@@ -297,7 +297,14 @@ th.rr-sortable .rr-arrow { color: #57606a; font-size: 0.75rem; margin-left: 0.2r
                                        border-top: 1px solid #e1e4e8; }
 .rr-tools input.rr-num { width: 4rem; font-size: 0.85rem; }
 .rr-hide summary { font-size: 0.85rem; font-weight: 600; cursor: pointer; }
-.rr-hide .rr-chips { margin-top: 0.3rem; }
+/* Write-in responses arrive as their own "code", so a question can offer dozens
+   of long verbatim choices; cap the list and clip each label to keep it usable. */
+.rr-hide .rr-chips { margin-top: 0.3rem; max-height: 14rem; overflow-y: auto;
+                     display: block; column-count: 2; column-gap: 1.2rem; }
+.rr-hide .rr-chips label { display: flex; align-items: baseline; gap: 0.3rem;
+                           break-inside: avoid; margin-bottom: 0.1rem; }
+.rr-code-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 700px) { .rr-hide .rr-chips { column-count: 1; } }
 #rr-global:empty { display: none; }
 """
 
@@ -872,8 +879,15 @@ function rrInit() {
         onChange(current());
       });
       label.appendChild(input);
-      label.appendChild(document.createTextNode(c.code + (c.label ? " \\u2014 " + c.label : "")));
-      label.title = "Hide this response from the table";
+      // A write-in's "code" is the verbatim text, so code and label are the same
+      // string -- printing both would just repeat a sentence. The span is width
+      // capped in CSS and carries the full text as its tooltip.
+      var text = (c.label && c.label !== c.code) ? c.code + " \\u2014 " + c.label : c.code;
+      var span = document.createElement("span");
+      span.className = "rr-code-label";
+      span.textContent = text;
+      span.title = text;
+      label.appendChild(span);
       body.appendChild(label);
     });
     syncSummary();
