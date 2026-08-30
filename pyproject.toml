@@ -36,11 +36,6 @@ line-length = 100
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-# "Get Qualtrics Survey.py" is the original standalone exporter, superseded by
-# the qualtrics_pipeline package: it is referenced nowhere, ships outside the
-# installed package, and is still CRLF-encoded. Linting it produces churn in
-# dead code rather than signal.
-extend-exclude = ["Get Qualtrics Survey.py"]
 
 [tool.ruff.lint]
 # Pin the rule set explicitly. Ruff's *default* selection is not stable across
