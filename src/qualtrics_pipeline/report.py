@@ -94,7 +94,9 @@ _STAT_DEFINITION = {
     "pct": "Whichever percentage this question's reporting base features.",
     "base_n": "Whichever base count this question's reporting base features.",
 }
-_DEFAULT_FLAT_STATS = ["n", "valid_pct", "eligible_pct", "total_pct"]
+# One percentage, following the question's reporting base -- matching the crosstab
+# default. The concrete per-base stats stay selectable for side-by-side comparison.
+_DEFAULT_FLAT_STATS = ["n", "pct"]
 _DEFAULT_CELL_STATS = ["n", "pct"]
 _PRES_DEFAULT = {
     "show_code": True, "orientation": "columns",
@@ -126,6 +128,26 @@ def _is_mutually_exclusive(rows: list[dict]) -> bool:
     if not rows:
         return True
     return sum(_num(r.get("n")) for r in rows) <= _num(rows[0].get("valid_n")) + 0.5
+
+
+_BASE_NAME = {"valid": "Valid", "eligible": "Eligible", "total": "Total"}
+
+
+def _base_caption(rows: list[dict], report_base: str, hidden: int) -> str:
+    """The '· Base: Eligible n = 101' clause of a question's caption line.
+
+    With one percentage column this line is the only place the denominator is
+    named, so it has to state the base in force and its size -- including the
+    smaller size after rows are hidden. Mirrored by baseCaption() in the JS.
+    """
+    if not report_base or not rows:
+        return ""
+    name = _BASE_NAME.get(report_base, report_base)
+    value = rows[0].get(_N_FIELD.get(report_base, "eligible_n"), "")
+    if value == "":
+        return ""
+    note = f" ({hidden} hidden)" if hidden > 0 else ""
+    return f" &middot; Base: {_esc(name)} n = {_esc(value)}{note}"
 
 
 def _code_choices(rows: list[dict]) -> list[dict[str, str]]:
@@ -329,6 +351,14 @@ function rrInit() {
   // single table is changed on its own.
   var decimalsSubscribers = [];
   function registerDecimals(setter, getter) { decimalsSubscribers.push({ set: setter, get: getter }); }
+  var baseSubscribers = [];
+  function registerBase(setter, getter) { baseSubscribers.push({ set: setter, get: getter }); }
+  var globalBaseSelect = null;
+  function syncBase(value) {
+    if (!globalBaseSelect) { return; }
+    var uniform = baseSubscribers.every(function (s) { return s.get() === value; });
+    globalBaseSelect.value = uniform ? value : "";
+  }
   var globalDecimalsInput = null;
   function syncDecimals(value) {
     if (globalDecimalsInput && Number(globalDecimalsInput.value) !== value) {
@@ -525,8 +555,13 @@ function rrInit() {
     if (showCode) { theadRow.appendChild(sortableTh("Code", "", { kind: "code" }, sort, onSort)); }
     theadRow.appendChild(sortableTh("Label", "", { kind: "label" }, sort, onSort));
     var featured = constants.pct_field[reportBase];
+    // The star distinguishes one percentage column from the others; with a single
+    // one it always lands on it and says nothing.
+    var starBases = stats.filter(function (st) {
+      return statField(st, reportBase).slice(-4) === "_pct";
+    }).length > 1;
     stats.forEach(function (stat) {
-      var mark = statField(stat, reportBase) === featured ? " \\u2605" : "";
+      var mark = (starBases && statField(stat, reportBase) === featured) ? " \\u2605" : "";
       theadRow.appendChild(
         sortableTh(statLabel(stat, reportBase) + mark, "num", { kind: "stat", stat: stat }, sort, onSort)
       );
@@ -894,6 +929,17 @@ function rrInit() {
     return syncSummary;
   }
 
+  // Twin of Python's _base_caption: with one percentage column this is the only
+  // place the denominator is named, so it must track the base and any hiding.
+  var BASE_NAME = { valid: "Valid", eligible: "Eligible", total: "Total" };
+  function baseCaption(rows, reportBase, hidden) {
+    if (!reportBase || !rows.length) { return ""; }
+    var value = rows[0][constants.n_field[reportBase] || "eligible_n"];
+    if (value === undefined || value === null || value === "") { return ""; }
+    return " \\u00b7 Base: " + (BASE_NAME[reportBase] || reportBase) + " n = " + value +
+      (hidden > 0 ? " (" + hidden + " hidden)" : "");
+  }
+
   // ---- statistic definitions ----
   function buildDefsPanel(container, getBase, kind, getStats) {
     var details = document.createElement("details");
@@ -1133,11 +1179,20 @@ function rrInit() {
       sort: null,
     };
     var hasAttr = hasAttributeIn(sdata.rows);
+    var metaEl = toolsEl.previousElementSibling;
+    if (!metaEl || !metaEl.classList || !metaEl.classList.contains("meta")) { metaEl = null; }
     registerDecimals(function (d) { state.pct_decimals = d; rerender(); }, function () { return state.pct_decimals; });
+    registerBase(function (v) { state.percent_base = v; rerender(); }, function () { return state.percent_base; });
 
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
       renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort);
+      if (metaEl) {
+        var shown = applyHidden(sdata.rows, state.hide_codes);
+        if (!shown.length) { shown = sdata.rows; }
+        metaEl.textContent = sdata.meta_prefix +
+          baseCaption(shown, state.percent_base, sdata.rows.length - shown.length);
+      }
       refreshDefs();
       refreshSnippet();
     }
@@ -1146,7 +1201,7 @@ function rrInit() {
     row1.className = "rr-row";
     addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
     addSelect(row1, "Total row", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
-    addSelect(row1, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; rerender(); });
+    addSelect(row1, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
     addNumber(row1, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
       function (v) { state.pct_decimals = v; syncDecimals(v); rerender(); });
     toolsEl.appendChild(row1);
@@ -1214,6 +1269,7 @@ function rrInit() {
     if (!metaEl || !metaEl.classList || !metaEl.classList.contains("meta")) { metaEl = null; }
     var lastPivot = null;
     registerDecimals(function (d) { state.pct_decimals = d; rerender(); }, function () { return state.pct_decimals; });
+    registerBase(function (v) { state.percent_base = v; rerender(); }, function () { return state.percent_base; });
 
     // Switching orientation swaps which axis the rows are, so a sort key from the
     // previous orientation no longer addresses a real column.
@@ -1247,7 +1303,7 @@ function rrInit() {
       overallSelect.title = "No ungrouped table was generated for this question, so there is no Overall data to show.";
     }
     addSelect(row2, "Response total", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
-    addSelect(row2, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; rerender(); });
+    addSelect(row2, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
     addNumber(row2, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
       function (v) { state.pct_decimals = v; syncDecimals(v); rerender(); });
     toolsEl.appendChild(row2);
@@ -1314,9 +1370,19 @@ function rrInit() {
       globalDecimalsInput.placeholder = "mixed";
       globalDecimalsInput.title = "Tables currently differ; setting this applies to all of them.";
     }
+    var bases = baseSubscribers.map(function (s) { return s.get(); });
+    var baseUniform = bases.every(function (v) { return v === bases[0]; });
+    // A "(mixed)" placeholder so the control can show that questions disagree
+    // without silently claiming one of them; picking it is a no-op.
+    globalBaseSelect = addSelect(row, "Reporting base", baseUniform ? bases[0] : "",
+      [["", "(mixed)"]].concat(BASE_OPTS), function (v) {
+        if (!v) { return; }
+        baseSubscribers.forEach(function (s) { s.set(v); });
+      });
+
     var note = document.createElement("span");
     note.className = "rr-note";
-    note.textContent = "Each table can override this in its own controls.";
+    note.textContent = "Each table can override these in its own controls.";
     row.appendChild(note);
     globalHost.appendChild(row);
   }
@@ -1369,8 +1435,6 @@ def _render_question_section(
     question_text = first.get("question_text", "")
     qtype = first.get("question_type", "")
     scale = first.get("scale_type", "")
-    eligible_n = first.get("eligible_n", "")
-    total_n = first.get("total_n", "")
     report_base = first.get("report_base", "")
 
     show_code = presentation.get("show_code", True)
@@ -1383,6 +1447,7 @@ def _render_question_section(
         rows = all_rows
     has_attribute = any((r.get("attribute") or "").strip() for r in rows)
     featured = _PCT_FIELD.get(report_base)
+    star_bases = sum(1 for s in stats if _stat_field(s, report_base).endswith("_pct")) > 1
 
     header_cells = []
     if has_attribute:
@@ -1392,7 +1457,9 @@ def _render_question_section(
     header_cells.append("<th>Label</th>")
     for stat in stats:
         # Star the column that matches the featured reporting base.
-        mark = " &#9733;" if _stat_field(stat, report_base) == featured else ""
+        # With a single percentage column the star would always sit on it, saying
+        # nothing; it only earns its place when several bases are side by side.
+        mark = " &#9733;" if (star_bases and _stat_field(stat, report_base) == featured) else ""
         header_cells.append(f'<th class="num">{_esc(_stat_label(stat, report_base))}{mark}</th>')
 
     def _row_html(label_cells: str, datarow: dict) -> str:
@@ -1422,10 +1489,9 @@ def _render_question_section(
         body.append(_total_row())
 
     badge = '<span class="badge">conditional</span>' if conditional else ""
-    reported = f" &middot; Reported base: {_esc(report_base)} &#9733;" if report_base else ""
     meta = (
-        f"Type: {_esc(qtype)} &middot; Scale: {_esc(scale)} &middot; "
-        f"Eligible n: {_esc(eligible_n)} &middot; Total n: {_esc(total_n)}{reported}"
+        f"Type: {_esc(qtype)} &middot; Scale: {_esc(scale)}"
+        f"{_base_caption(rows, report_base, len(all_rows) - len(rows))}"
     )
     writein = _render_writein_table(writein_rows) if writein_rows else ""
     tools_div = f'<div class="rr-tools" data-kind="flat" data-slug="{_esc(slug)}"></div>'
@@ -1433,6 +1499,7 @@ def _render_question_section(
         {
             "kind": "flat",
             "question_id": question_id,
+            "meta_prefix": f"Type: {qtype} \u00b7 Scale: {scale}",
             "report_base": report_base,
             # Unfiltered, so the browser can re-apply or undo hide_codes itself.
             "rows": all_rows,

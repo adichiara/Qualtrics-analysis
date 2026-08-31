@@ -87,10 +87,11 @@ def test_generate_report_renders_values_and_conditional_badge(tmp_path) -> None:
     # Two question sections, indexed in survey order (Q1.5 before Q1.6)
     assert html.count("<section id=") == 2
     assert html.index("Q1.5") < html.index("Q1.6")
-    # Conditional badge present for QID3, eligible/total bases surfaced
+    # Conditional badge present for QID3. The caption names the base in force and
+    # its size -- with one percentage column it is the only place the denominator
+    # is stated, so it must be specific rather than listing every base.
     assert "conditional" in html
-    assert "Eligible n: 42" in html
-    assert "Total n: 101" in html
+    assert "Base: Eligible n = 42" in html
 
 
 def test_writein_table_rendered_under_parent_question(tmp_path) -> None:
@@ -433,3 +434,58 @@ def test_base_n_not_offered_as_a_toggle() -> None:
 
     assert "base_n" not in _STAT_ORDER
     assert "pct" in _STAT_ORDER  # crosstabs default to it
+
+
+# ---------------------------------------------------------------------------
+# Single reporting base: caption, star, and default stats
+# ---------------------------------------------------------------------------
+
+def _caption(html: str, slug: str = "QID2") -> str:
+    import re
+    return re.search(r'<div class="meta">(.*?)</div>', html.split(f'id="{slug}"')[1]).group(1)
+
+
+def _based_rows() -> list[dict]:
+    """Distinct bases so the caption and percentages can't be confused: 100 answered,
+    120 eligible, 200 total."""
+    return [
+        _base_row(response_code="1", response_label="A", n="60", valid_n="100", valid_pct="60.0",
+                  eligible_n="120", eligible_pct="50.0", total_n="200", total_pct="30.0"),
+        _base_row(response_code="2", response_label="B", n="30", valid_n="100", valid_pct="30.0",
+                  eligible_n="120", eligible_pct="25.0", total_n="200", total_pct="15.0"),
+        _base_row(response_code="-1", response_label="N/A", n="10", valid_n="100", valid_pct="10.0",
+                  eligible_n="120", eligible_pct="8.33", total_n="200", total_pct="5.0"),
+    ]
+
+
+def test_flat_default_is_a_single_percentage() -> None:
+    """Flat tables now match crosstabs: one percentage that follows the reporting
+    base, rather than three side by side."""
+    from qualtrics_pipeline.report import _DEFAULT_CELL_STATS, _DEFAULT_FLAT_STATS
+
+    assert _DEFAULT_FLAT_STATS == ["n", "pct"] == _DEFAULT_CELL_STATS
+
+
+def test_caption_names_the_base_and_its_size(tmp_path) -> None:
+    """With one percentage column the caption is the only place the denominator is
+    stated, so it must name the base in force and its n."""
+    table = _render(tmp_path, _based_rows(), {})
+    assert "Eligible %" in table          # column follows report_base
+    html = generate_html_report(tmp_path / "run").read_text()
+    assert "Base: Eligible n = 120" in _caption(html)
+
+
+def test_caption_reports_hidden_rows(tmp_path) -> None:
+    _render(tmp_path, _based_rows(), {"hide_codes": ["-1"]})
+    assert "(1 hidden)" in _caption(generate_html_report(tmp_path / "run").read_text())
+
+
+def test_star_only_when_several_percentages_are_shown(tmp_path) -> None:
+    """The star distinguishes one percentage column from others; with a single one
+    it always lands on it and conveys nothing."""
+    single = _render(tmp_path, _based_rows(), {"stats": ["n", "pct"]})
+    assert "&#9733;" not in single
+
+    several = _render(tmp_path / "b", _based_rows(),
+                      {"stats": ["n", "valid_pct", "eligible_pct", "total_pct"]})
+    assert "Eligible % &#9733;" in several   # the featured base is marked again
