@@ -1,4 +1,0 @@
-question_key,question_id,question_text,question_type,attribute,column,scale_type,response_code,response_label,n,valid_pct,valid_n,question_total_n
-QID19730741,Q2.9,"[Less than one year of service] Enter your total months of service, under one year:",MC,,Q2.9,nominal,5,5,1,33.33,3,3
-QID19730741,Q2.9,"[Less than one year of service] Enter your total months of service, under one year:",MC,,Q2.9,nominal,6,6,1,33.33,3,3
-QID19730741,Q2.9,"[Less than one year of service] Enter your total months of service, under one year:",MC,,Q2.9,nominal,9,9,1,33.33,3,3
