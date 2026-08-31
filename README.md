@@ -192,10 +192,21 @@ denominator it uses, including the base counts a percentage divides by.
 **Decimal places.** A control at the top of the report sets the precision of every
 percentage at once; each table's own "% decimals" box overrides it for that table.
 
-**Reporting base.** Each table has a base selector (Valid / Eligible / Total) that
-moves the ★ and re-points the "Featured %" stat. Every row already carries all
-three percentages, so switching is instant — but persisting it via `percent_base`
-needs a frequencies re-run, since that value is stamped into the CSV.
+**Reporting base.** Tables show a **single percentage column**, against the base
+you pick — Valid (of those who answered), Eligible (of those shown the question),
+or Total (of all respondents). Choose it per table, or for the whole report from
+the control at the top. Every row already carries all three percentages, so
+switching is instant; persisting it via `percent_base` needs a frequencies re-run,
+since that value is stamped into the CSV.
+
+The caption line above each table names the base in force and its size — e.g.
+`Base: Eligible n = 120` — and follows the selector, so the denominator behind a
+percentage is always stated. When rows are hidden it reports the reduced base and
+the count dropped: `Base: Valid n = 88 (1 hidden)`.
+
+To compare bases side by side (useful when checking a conditional question), tick
+`Valid %`, `Eligible %` and `Total %` in the stat toggles. With more than one
+percentage on show, ★ marks the one matching the reporting base.
 
 **Hiding N/A rows.** "Hide rows" lists the response codes present in that table
 with their labels; tick the ones to omit. Codes are offered rather than assumed
