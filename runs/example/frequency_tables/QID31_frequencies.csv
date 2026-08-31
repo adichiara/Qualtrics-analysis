@@ -1,0 +1,10 @@
+question_key,question_id,question_text,question_type,attribute,column,scale_type,response_code,response_label,n,valid_n,valid_pct,eligible_n,eligible_pct,total_n,total_pct,report_base,group_keys,group_codes,group_labels
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7,nominal,5,3-7 FA,5,18,27.78,101,4.95,101,4.95,eligible,,,
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7,nominal,2,DSTB,4,18,22.22,101,3.96,101,3.96,eligible,,,
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7,nominal,1,DSSB,2,18,11.11,101,1.98,101,1.98,eligible,,,
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7,nominal,3,DEB,2,18,11.11,101,1.98,101,1.98,eligible,,,
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7,nominal,6,HHB,2,18,11.11,101,1.98,101,1.98,eligible,,,
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7,nominal,7,Other (please specify):,2,18,11.11,101,1.98,101,1.98,eligible,,,
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7,nominal,4,325 LSB,1,18,5.56,101,0.99,101,0.99,eligible,,,
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7_7_TEXT,nominal,At tortor sagittis fermentum tincidunt eget elementum dolorem orci. Placerat vestibulum.,At tortor sagittis fermentum tincidunt eget elementum dolorem orci. Placerat vestibulum.,1,2,50.0,101,0.99,101,0.99,eligible,,,
+QID31,Q1.7,Select your Battalion:,MC,,Q1.7_7_TEXT,nominal,"Lorem gravida. Pharetra lectus iaculis accusamus augue. Arcu at elementum, felis malesuada eget luctus.","Lorem gravida. Pharetra lectus iaculis accusamus augue. Arcu at elementum, felis malesuada eget luctus.",1,2,50.0,101,0.99,101,0.99,eligible,,,

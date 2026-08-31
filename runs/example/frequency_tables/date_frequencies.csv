@@ -1,0 +1,2 @@
+question_key,question_id,question_text,question_type,attribute,column,scale_type,response_code,response_label,n,valid_n,valid_pct,eligible_n,eligible_pct,total_n,total_pct,report_base,group_keys,group_codes,group_labels
+date,,,,,date,nominal,5/15/2026,5/15/2026,101,101,100.0,101,100.0,101,100.0,eligible,,,

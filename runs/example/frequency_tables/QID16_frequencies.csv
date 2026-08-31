@@ -1,0 +1,6 @@
+question_key,question_id,question_text,question_type,attribute,column,scale_type,response_code,response_label,n,valid_n,valid_pct,eligible_n,eligible_pct,total_n,total_pct,report_base,group_keys,group_codes,group_labels
+QID16,Q1.9,"What type of uniform were you issued? <br><br>Your uniform should be labeled.&nbsp; If you don't know, please ask one of the representatives.",MC,,Q1.9,nominal,2,FR Uniform B,25,101,24.75,101,24.75,101,24.75,eligible,,,
+QID16,Q1.9,"What type of uniform were you issued? <br><br>Your uniform should be labeled.&nbsp; If you don't know, please ask one of the representatives.",MC,,Q1.9,nominal,5,FR Uniform E,22,101,21.78,101,21.78,101,21.78,eligible,,,
+QID16,Q1.9,"What type of uniform were you issued? <br><br>Your uniform should be labeled.&nbsp; If you don't know, please ask one of the representatives.",MC,,Q1.9,nominal,4,FR Uniform D,21,101,20.79,101,20.79,101,20.79,eligible,,,
+QID16,Q1.9,"What type of uniform were you issued? <br><br>Your uniform should be labeled.&nbsp; If you don't know, please ask one of the representatives.",MC,,Q1.9,nominal,1,FR Uniform A,20,101,19.8,101,19.8,101,19.8,eligible,,,
+QID16,Q1.9,"What type of uniform were you issued? <br><br>Your uniform should be labeled.&nbsp; If you don't know, please ask one of the representatives.",MC,,Q1.9,nominal,3,FR Uniform C,13,101,12.87,101,12.87,101,12.87,eligible,,,
