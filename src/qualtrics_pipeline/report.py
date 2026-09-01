@@ -105,6 +105,11 @@ _PRES_DEFAULT = {
     "overall": False, "response_total": False, "stats": None,
     "pct_decimals": 2, "hide_codes": [],
 }
+# Written by the frequencies stage, which owns them: they decide which rows exist
+# rather than how existing rows look. The manifest keeps them in their own map;
+# the report merges both into one per-table options dict, and the browser echoes
+# them into the *question* config block rather than a table spec.
+_FREQ_DEFAULT = {"include_empty_codes": False}
 # Selectable stats, in display order. "base_n" is deliberately absent: it resolves
 # to whichever base is featured, which a crosstab already prints in its group
 # header and a flat table can name outright, so it never earned a toggle. It stays
@@ -432,6 +437,17 @@ function rrInit() {
     rows.forEach(function (r) { total += Number(r.n) || 0; });
     return total <= (Number(rows[0].valid_n) || 0) + 0.5;
   }
+  // include_empty_codes is written into the CSV, so the browser can only take the
+  // n = 0 rows away again -- it cannot invent ones the frequencies stage never
+  // wrote. Unchecking the box therefore previews the off state without a re-run.
+  function hasEmptyRows(rows) {
+    return (rows || []).some(function (r) { return (Number(r.n) || 0) === 0; });
+  }
+  function dropEmpty(rows, includeEmpty) {
+    if (includeEmpty) { return rows; }
+    var kept = rows.filter(function (r) { return (Number(r.n) || 0) !== 0; });
+    return kept.length ? kept : rows;
+  }
   function applyHidden(rows, hideCodes) {
     if (!hideCodes || !hideCodes.length) { return rows; }
     var hidden = {};
@@ -604,7 +620,7 @@ function rrInit() {
     var decimals = presentation.pct_decimals;
     // Hidden codes drop out before anything else, so the Total row and the sort
     // both operate on exactly what is displayed.
-    var rows = applyHidden(allRows, presentation.hide_codes);
+    var rows = applyHidden(dropEmpty(allRows, presentation.include_empty_codes), presentation.hide_codes);
     if (!rows.length) { rows = allRows; }
     var hasAttr = hasAttributeIn(rows);
     var stats = (presentation.stats && presentation.stats.length) ? presentation.stats : constants.default_flat_stats;
@@ -634,6 +650,8 @@ function rrInit() {
   // ---- grouped (crosstab) table ----
   function pivotGrouped(rows, overallRows, presentation, reportBase) {
     var nField = constants.n_field[reportBase] || "eligible_n";
+    rows = dropEmpty(rows, presentation.include_empty_codes);
+    if (overallRows) { overallRows = dropEmpty(overallRows, presentation.include_empty_codes); }
     var groupRows = {};
     var groupOrder = [];
     rows.forEach(function (r) {
@@ -1061,7 +1079,11 @@ function rrInit() {
   // Keys the frequencies stage owns; they sit on the question, never on a
   // table spec, and only take effect after that stage is re-run.
   function questionConfig(state, sort, axis) {
-    var cfg = { include: state.include !== false, percent_base: state.percent_base };
+    var cfg = {
+      include: state.include !== false,
+      percent_base: state.percent_base,
+      include_empty_codes: !!state.include_empty_codes,
+    };
     var sc = sortConfig(sort, axis);
     for (var k in sc.keys) { cfg[k] = sc.keys[k]; }
     return { cfg: cfg, note: sc.note };
@@ -1095,7 +1117,8 @@ function rrInit() {
   // that can be applied plus what was rejected and why.
   var TABLE_KEYS = ["show_code", "orientation", "overall", "response_total",
                     "stats", "pct_decimals", "hide_codes"];
-  var QUESTION_KEYS = ["include", "percent_base", "sort_by", "response_order"];
+  var QUESTION_KEYS = ["include", "percent_base", "sort_by", "response_order",
+                       "include_empty_codes"];
   function inList(v, list) { return list.indexOf(v) !== -1; }
   function readConfig(obj, kind) {
     var out = { values: {}, errors: [], ignored: [] };
@@ -1111,6 +1134,14 @@ function rrInit() {
         case "include":
           if (typeof v !== "boolean") { out.errors.push(key + " must be true or false"); }
           else { out.values[key] = v; }
+          break;
+        case "include_empty_codes":
+          // Turning it off is just a filter, so it applies here; turning it on
+          // needs rows this CSV does not have. Either way the value is recorded
+          // so the config exported afterwards still says what was asked for.
+          if (typeof v !== "boolean") { out.errors.push(key + " must be true or false"); break; }
+          out.values.include_empty_codes = v;
+          if (v) { out.ignored.push("include_empty_codes: zero-response rows are added when the CSV is written"); }
           break;
         case "orientation":
           if (!inList(v, constants.orientations)) { out.errors.push("orientation must be columns or rows"); }
@@ -1306,6 +1337,18 @@ function rrInit() {
     return refresh;
   }
 
+  // Zero-response rows exist in the CSV only when the frequencies stage put them
+  // there, so the box can preview them away but not conjure them up. Its value is
+  // always written to the question config, which is what a re-run reads.
+  function addEmptyCodesBox(row, state, rerender, hasEmpty) {
+    var box = addCheckbox(row, "Zero-response codes", state.include_empty_codes,
+      function (v) { state.include_empty_codes = v; rerender(); });
+    box.title = hasEmpty
+      ? "Show the n = 0 rows for codes the survey defines but nobody chose."
+      : "This table has no zero-response rows. Ticking this writes include_empty_codes " +
+        "into the question config; re-run the frequencies stage to fill them in.";
+    return box;
+  }
   // ---- per-section wiring ----
   function initFlatSection(toolsEl, slug) {
     var dataNode = document.getElementById(slug + "-data");
@@ -1320,6 +1363,7 @@ function rrInit() {
       pct_decimals: pres.pct_decimals === undefined ? 2 : pres.pct_decimals,
       hide_codes: (pres.hide_codes || []).slice(),
       percent_base: sdata.report_base,
+      include_empty_codes: !!pres.include_empty_codes,
     };
     var state = {
       show_code: effective.show_code,
@@ -1328,6 +1372,7 @@ function rrInit() {
       pct_decimals: effective.pct_decimals,
       hide_codes: effective.hide_codes.slice(),
       percent_base: effective.percent_base,
+      include_empty_codes: effective.include_empty_codes,
       include: true,
       sort: null,
     };
@@ -1346,6 +1391,9 @@ function rrInit() {
       hideables.forEach(function (el) { el.hidden = !state.include; });
       renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort);
       if (metaEl) {
+        // Deliberately not dropEmpty'd: a zero-response row holds no respondents,
+        // so removing it moves no base and counting it as "hidden" would imply
+        // answers went missing.
         var shown = applyHidden(sdata.rows, state.hide_codes);
         if (!shown.length) { shown = sdata.rows; }
         metaEl.textContent = sdata.meta_prefix +
@@ -1360,6 +1408,7 @@ function rrInit() {
     row1.className = "rr-row";
     var incBox = addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
     var codeBox = addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
+    var emptyBox = addEmptyCodesBox(row1, state, function () { rerender(); }, hasEmptyRows(sdata.rows));
     var totalSel = addSelect(row1, "Total row", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
     var baseSel = addSelect(row1, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
     var decInput = addNumber(row1, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
@@ -1377,6 +1426,7 @@ function rrInit() {
     function syncControls() {
       incBox.checked = state.include;
       codeBox.checked = state.show_code;
+      emptyBox.checked = state.include_empty_codes;
       totalSel.value = state.response_total || "";
       baseSel.value = state.percent_base;
       decInput.value = String(state.pct_decimals);
@@ -1440,6 +1490,7 @@ function rrInit() {
       pct_decimals: pres.pct_decimals === undefined ? 2 : pres.pct_decimals,
       hide_codes: (pres.hide_codes || []).slice(),
       percent_base: sdata.report_base,
+      include_empty_codes: !!pres.include_empty_codes,
     };
     var state = {
       show_code: effective.show_code,
@@ -1450,6 +1501,7 @@ function rrInit() {
       pct_decimals: effective.pct_decimals,
       hide_codes: effective.hide_codes.slice(),
       percent_base: effective.percent_base,
+      include_empty_codes: effective.include_empty_codes,
       include: true,
       sort: null,
     };
@@ -1479,6 +1531,8 @@ function rrInit() {
     row1.className = "rr-row";
     var incBox = addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
     var codeBox = addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
+    var emptyBox = addEmptyCodesBox(row1, state, function () { rerender(); },
+      hasEmptyRows((sdata.rows || []).concat(sdata.overall_rows || [])));
     var orientSel = addSelect(row1, "Orientation", state.orientation, [["columns", "Columns"], ["rows", "Rows"]], function (v) {
       state.orientation = v;
       state.sort = null; // the old sort key addressed the other axis's columns
@@ -1510,6 +1564,7 @@ function rrInit() {
     function syncControls() {
       incBox.checked = state.include;
       codeBox.checked = state.show_code;
+      emptyBox.checked = state.include_empty_codes;
       orientSel.value = state.orientation;
       overallSelect.value = state.overall || "";
       totalSel.value = state.response_total || "";
@@ -1693,8 +1748,9 @@ function rrInit() {
     var setFull = snippetPart(full,
       "Every question as currently shown \\u2014 paste over qualtrics_frequency_config.json, " +
       "or paste a config in and press Apply to rearrange the report to match. " +
-      "include, percent_base, sort_by and response_order are applied by the frequencies " +
-      "stage, so re-run it for those; the rest apply on the next report render.",
+      "include, percent_base, sort_by, response_order and include_empty_codes are applied " +
+      "by the frequencies stage, so re-run it for those; the rest apply on the next " +
+      "report render.",
       applyReportConfig);
     refreshFullConfig = function () { setFull(buildReportConfig()); };
     refreshFullConfig();
@@ -2025,6 +2081,7 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
     conditional = set((manifest.get("conditional_questions") or {}).keys())
     presentation_map = manifest.get("table_presentation") or {}
+    freq_opts_map = manifest.get("table_frequency_opts") or {}
     data_path = manifest.get("data_path", "(unknown)")
 
     # Overall (ungrouped) rows by question_key, for the optional Overall column.
@@ -2046,7 +2103,12 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     blocks.sort(key=lambda b: b[0])
 
     def _presentation(slug: str) -> dict:
-        return {**_PRES_DEFAULT, **(presentation_map.get(slug) or {})}
+        return {
+            **_PRES_DEFAULT,
+            **_FREQ_DEFAULT,
+            **(presentation_map.get(slug) or {}),
+            **(freq_opts_map.get(slug) or {}),
+        }
 
     def _index_label(rows: list[dict[str, str]]) -> str:
         qid = rows[0].get("question_id") or ""

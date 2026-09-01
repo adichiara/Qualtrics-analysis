@@ -207,6 +207,40 @@ PRESENTATION_DEFAULTS = {
 # so this is a pure report-layer setting.
 PCT_DECIMALS_MAX = 6
 
+# Question-level options that change which *rows* get written, as opposed to how
+# existing rows are displayed. The report can echo these back into a config
+# snippet but cannot apply them live -- the data simply is not in the CSV -- so
+# they are kept apart from PRESENTATION_DEFAULTS and stamped into their own
+# manifest map.
+FREQUENCY_DEFAULTS = {
+    "include_empty_codes": False,  # emit n = 0 rows for defined-but-unchosen codes
+}
+
+# A multi-select column encodes a single choice: the column *is* the option, and
+# its response_labels are {"0": "Not selected", "1": "Selected"} rather than the
+# choice list. So the code worth filling in is the "selected" marker alone --
+# padding with "Not selected" would answer a question nobody asked, while an
+# option nobody picked is a column with no values at all, which is exactly the
+# row that goes missing today.
+_UNSELECTED_CODES = {"0", ""}
+_SELECTED_CODE = "1"
+
+
+def _resolve_frequency_opts(cfg: dict) -> dict:
+    out = dict(FREQUENCY_DEFAULTS)
+    for key in FREQUENCY_DEFAULTS:
+        if key in cfg:
+            out[key] = bool(cfg[key])
+    return out
+
+
+def _codes_to_fill(labels: dict[str, str], is_multi_select: bool) -> list[str]:
+    """Defined response codes that should appear even with no responses."""
+    if not is_multi_select:
+        return list(labels)
+    selected = [c for c in labels if c not in _UNSELECTED_CODES]
+    return selected or [_SELECTED_CODE]
+
 
 def _is_groupable(mapping: dict[str, Any]) -> bool:
     """Whether a column can be used as a breakout ("group_by") variable."""
@@ -278,6 +312,13 @@ def _config_reference() -> dict[str, str]:
         "include": "true|false - include this question in the report",
         "sort_by": f"{sort_opts} - response ordering; response_order also needs the response_order list below",
         "response_order": "list of response codes in the order to display them (used when sort_by is response_order)",
+        "include_empty_codes": (
+            "true|false - also emit a row (n = 0) for every response code the survey defines "
+            "but nobody chose, so e.g. a series of rating scales shows the same rows in every "
+            "table. Question-level only; ignored on a table spec. For a select-all question "
+            "this fills in options nobody picked -- not \"Not selected\" rows. Off by default: "
+            "a long dropdown defines hundreds of codes and would produce a row for each."
+        ),
         "percent_base": f"{pct_opts} - featured denominator (valid=answered, eligible=shown per display logic, total=all respondents)",
         "show_code": "true|false - show the response-code column in the report",
         "stats": f"list from: {stat_opts} (omit/empty = report default)",
@@ -360,13 +401,29 @@ def _build_question_rows(subset, qkey, mappings, cfg, display_logic, group_cols)
     if report_base not in PERCENT_BASES:
         report_base = "eligible"
 
+    include_empty = _resolve_frequency_opts(cfg)["include_empty_codes"]
+
     out_rows = []
     for m in mappings:
         vals = [str(r.get(m["column"], "")).strip() for r in subset]
         valid = [v for v in vals if not _is_missing(v)]
-        if not valid:
+        labels = m.get("response_labels", {}) or {}
+        # Multi-select columns store "1" when selected and blank otherwise,
+        # so a per-column non-missing count would equal n (always 100%). Use
+        # the question-level "answered any option" total as the valid base.
+        is_multi_select = m.get("selector") in MULTI_SELECTORS
+        # A write-in column's "codes" are the verbatim answers, so there is no
+        # defined set to fill in; the parent question's labels would be nonsense
+        # here. The name check is a fallback for column maps written before the
+        # exporter carried the flag, where a _TEXT column is otherwise
+        # indistinguishable from its parent.
+        is_write_in = bool(m.get("is_text_entry_suffix")) or m["column"].endswith("_TEXT")
+        fill = _codes_to_fill(labels, is_multi_select) if include_empty and not is_write_in else []
+        if not valid and not fill:
             continue
         counts = Counter(valid)
+        for code in fill:
+            counts.setdefault(code, 0)
         question_type = m.get("question_type", "")
         # scale_type is a semantic descriptor of the measurement scale.
         # interval: ordered/numeric (Matrix Likert, NPS); nominal: categorical.
@@ -376,14 +433,9 @@ def _build_question_rows(subset, qkey, mappings, cfg, display_logic, group_cols)
             if (mode == "interval" or (mode == "auto" and question_type in {"Matrix", "NPS"}))
             else "nominal"
         )
-        labels = m.get("response_labels", {}) or {}
         sort_by = _effective_sort_by(cfg, question_type)
         response_order_cfg = [str(x) for x in (cfg.get("response_order", []) or [])]
         ordered = _ordered_codes(counts, sort_by, response_order_cfg, labels)
-        # Multi-select columns store "1" when selected and blank otherwise,
-        # so a per-column non-missing count would equal n (always 100%). Use
-        # the question-level "answered any option" total as the valid base.
-        is_multi_select = m.get("selector") in MULTI_SELECTORS
         valid_n = question_total_n if is_multi_select else len(valid)
         for code in ordered:
             n = counts[code]
@@ -507,6 +559,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                 table_meta[qkey] = {
                     "qkey": qkey, "group_by": [], "n_groups": 1,
                     "dropped_missing": 0, "presentation": presentation,
+                    "frequency": _resolve_frequency_opts(cfg),
                 }
                 continue
 
@@ -542,6 +595,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                 "n_groups": len(level_rows),
                 "dropped_missing": dropped,
                 "presentation": presentation,
+                "frequency": _resolve_frequency_opts(cfg),
             }
 
     return tables, text_outputs, {"table_specs": table_meta, "grouping_warnings": warnings}
@@ -655,6 +709,11 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         "config_warnings": [f"{where}: {msg}" for _level, where, msg in warnings],
         "table_presentation": {
             slug: meta["presentation"]
+            for slug, meta in report_meta["table_specs"].items()
+            if tables.get(slug)
+        },
+        "table_frequency_opts": {
+            slug: meta["frequency"]
             for slug, meta in report_meta["table_specs"].items()
             if tables.get(slug)
         },

@@ -248,9 +248,10 @@ Two kinds of key appear:
   `response_total`, `pct_decimals`, `hide_codes`) go in that question's block, or
   in its matching `tables` entry for a grouped table. `report.py` applies these at
   render time, so regenerating the report is enough.
-- **Keys the frequencies stage owns** (`sort_by`, `response_order`, and
-  `percent_base`) always go in the question's block. These are applied when the
-  CSVs are written, so **re-run the frequencies stage** for them to take effect.
+- **Keys the frequencies stage owns** (`sort_by`, `response_order`,
+  `percent_base`, and `include_empty_codes`) always go in the question's block.
+  These are applied when the CSVs are written, so **re-run the frequencies stage**
+  for them to take effect.
   Sorting a grouped table's group axis has no config equivalent and the panel says
   so rather than emitting a key that would not work.
 
@@ -270,6 +271,30 @@ Each question in the frequency config takes a `sort_by` value controlling row or
 - `auto` (default) — Matrix questions use `survey_order`, all other types use `count_desc`
 
 The legacy `frequency_mode` field is still honored (`interval` → `survey_order`, `nominal` → `count_desc`).
+
+## Zero-response rows (`include_empty_codes`)
+
+By default a table has a row only for response codes somebody actually chose. Set
+`include_empty_codes: true` on a question to also emit a row with `n = 0` for every
+code the survey defines but nobody picked, so a series of rating scales shows the
+same rows in every table and a missing option reads as zero rather than vanishing.
+It is a question-level key (ignored on a `tables` entry) and applies to grouped
+tables too, where a code absent from one breakout column still gets its row.
+
+For a **select-all** question the option *is* the column, and its `response_labels`
+are `{"0": "Not selected", "1": "Selected"}` rather than the choice list — so this
+fills in the options nobody selected, not "Not selected" rows. Write-in (`_TEXT`)
+columns are left alone; their codes are the verbatim answers, so there is no
+defined set to fill in.
+
+It is off by default because "all defined codes" is only a small set for rating
+scales and short choice lists. A dropdown can define hundreds of codes (a roster,
+a state list) and would get a row for each, so turn it on per question rather than
+in `defaults`.
+
+In the HTML report each table has a **Zero-response codes** checkbox. Unticking it
+previews the table without those rows without a re-run; ticking it on a table that
+has none writes the key into the question config for the next frequencies run.
 
 ## Percentage bases (computed up front)
 
