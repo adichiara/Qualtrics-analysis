@@ -115,7 +115,14 @@ def _text_mode_for(mapping: dict[str, Any], question_cfg: dict[str, Any]) -> str
 #   count_desc    – most frequent first (default for nominal questions)
 #   count_asc     – least frequent first
 #   response_order – use the explicit response_order list from config
-SORT_BY_VALUES = {"survey_order", "count_desc", "count_asc", "response_order"}
+# survey_order is the order the choices appear in the survey, which is not the
+# same as their code order: Qualtrics keeps a choice's recode value when the
+# designer moves it, so an "Other" option added late can carry code 201 and sit
+# first, and a reordered scale can run 1, 2, 3, 5, 4. code_asc/code_desc are the
+# separate numeric ordering.
+SORT_BY_VALUES = {
+    "survey_order", "code_asc", "code_desc", "count_desc", "count_asc", "response_order",
+}
 
 
 def _effective_sort_by(cfg: dict[str, Any], question_type: str) -> str:
@@ -158,6 +165,18 @@ def _ordered_codes(
             key=_numeric_sort_key,
         )
         return in_order + remainder
+
+    if sort_by in ("code_asc", "code_desc"):
+        # Non-numeric codes go last either way. A write-in's "code" is the
+        # verbatim answer, so mirroring the sort would open a descending table
+        # with a block of sentences, which is not what "highest code first" asks
+        # for -- the same reason the report's other sorts pin unrankable values
+        # to the bottom in both directions.
+        numeric = [c for c in all_codes if _numeric_sort_key(c)[0] == 0]
+        other = [c for c in all_codes if _numeric_sort_key(c)[0] == 1]
+        numeric.sort(key=_numeric_sort_key, reverse=sort_by == "code_desc")
+        other.sort()
+        return numeric + other
 
     if sort_by == "count_asc":
         return sorted(all_codes, key=lambda k: (counts[k], k))
@@ -358,7 +377,12 @@ def _config_reference() -> dict[str, str]:
             "value. Omit (the default) to include everything, minus any individual include: false."
         ),
         "include": "true|false - include this question in the report",
-        "sort_by": f"{sort_opts} - response ordering; response_order also needs the response_order list below",
+        "sort_by": (
+            f"{sort_opts} - response ordering. survey_order is the order the choices "
+            "appear in the survey, which is not their code order (a choice keeps its "
+            "recode value when the designer moves it); code_asc/code_desc order by the "
+            "code itself. response_order also needs the response_order list below"
+        ),
         "response_order": "list of response codes in the order to display them (used when sort_by is response_order)",
         "include_empty_codes": (
             "true|false - also emit a row (n = 0) for every response code the survey defines "
