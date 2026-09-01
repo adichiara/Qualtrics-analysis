@@ -109,7 +109,7 @@ _PRES_DEFAULT = {
 # rather than how existing rows look. The manifest keeps them in their own map;
 # the report merges both into one per-table options dict, and the browser echoes
 # them into the *question* config block rather than a table spec.
-_FREQ_DEFAULT = {"include_empty_codes": False}
+_FREQ_DEFAULT = {"include_empty_codes": False, "sort_by": "auto"}
 # Selectable stats, in display order. "base_n" is deliberately absent: it resolves
 # to whichever base is featured, which a crosstab already prints in its group
 # header and a flat table can name outright, so it never earned a toggle. It stays
@@ -157,6 +157,14 @@ def _base_caption(rows: list[dict], report_base: str, hidden: int) -> str:
     return f" &middot; Base: {_esc(name)} n = {_esc(value)}{note}"
 
 
+def _numeric_sort_key(value: str) -> tuple[int, float | str]:
+    """Order codes as numbers where they are numbers, as text otherwise."""
+    try:
+        return (0, float(value))
+    except ValueError:
+        return (1, value)
+
+
 def _code_choices(rows: list[dict]) -> list[dict[str, str]]:
     """The response codes present in a table, for the hide picker.
 
@@ -171,6 +179,11 @@ def _code_choices(rows: list[dict]) -> list[dict[str, str]]:
         if code and code not in seen:
             seen.add(code)
             out.append({"code": code, "label": r.get("response_label", "")})
+    # By code, not by the table's row order: the picker is a lookup ("hide -1"),
+    # and a list that reorders itself whenever the table is re-sorted is one you
+    # have to re-scan every time. Numbers sort numerically, so 10 follows 9;
+    # write-in "codes" are verbatim text and sort after the coded ones.
+    out.sort(key=lambda c: _numeric_sort_key(c["code"]))
     return out
 
 
@@ -309,6 +322,9 @@ table.writein th { background: #eef1f4; }
 .rr-chips label { display: flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
 .rr-tools select { font-size: 0.85rem; }
 .rr-tools .rr-note { color: #888; font-size: 0.78rem; }
+.rr-panel > summary { font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+.rr-panel[open] > summary { margin-bottom: 0.35rem; }
+.rr-tools input[type="checkbox"]:indeterminate { opacity: 0.6; }
 .rr-snippet summary { font-size: 0.85rem; font-weight: 600; }
 .rr-snippet-body { width: 100%; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                     font-size: 0.8rem; margin: 0.4rem 0; padding: 0.4rem; }
@@ -359,31 +375,39 @@ function rrInit() {
     return [b, b.charAt(0).toUpperCase() + b.slice(1)];
   });
 
-  // Every section registers its decimals setter here so the report-level control
-  // can set them all at once; syncDecimals keeps that control in step when a
-  // single table is changed on its own.
-  var decimalsSubscribers = [];
-  function registerDecimals(setter, getter) { decimalsSubscribers.push({ set: setter, get: getter }); }
   // Every section registers what it contributes to the report-wide config.
   var configSections = [];
   function registerSection(entry) { configSections.push(entry); }
   var refreshFullConfig = function () {};
 
-  var baseSubscribers = [];
-  function registerBase(setter, getter) { baseSubscribers.push({ set: setter, get: getter }); }
-  var globalBaseSelect = null;
-  function syncBase(value) {
-    if (!globalBaseSelect) { return; }
-    var uniform = baseSubscribers.every(function (s) { return s.get() === value; });
-    globalBaseSelect.value = uniform ? value : "";
+  // Report-level controls drive every table at once. A section registers one
+  // accessor per option it can be told to change; the control reads them to see
+  // whether the tables agree and writes to all of them. Options that only make
+  // sense for one table (hide_codes names this question's codes) are not
+  // registered, so no global control appears for them.
+  var globalSubs = {};
+  var globalInputs = {};
+  function registerGlobal(key, setter, getter) {
+    (globalSubs[key] || (globalSubs[key] = [])).push({ set: setter, get: getter });
   }
-  var globalDecimalsInput = null;
-  function syncDecimals(value) {
-    if (globalDecimalsInput && Number(globalDecimalsInput.value) !== value) {
-      var uniform = decimalsSubscribers.every(function (s) { return s.get() === value; });
-      globalDecimalsInput.value = uniform ? String(value) : "";
-    }
+  function sameValue(a, b) {
+    if (Array.isArray(a) || Array.isArray(b)) { return JSON.stringify(a) === JSON.stringify(b); }
+    return a === b;
   }
+  // The value every table agrees on, or undefined when they differ -- which the
+  // controls show as "(mixed)" rather than silently claiming one of them.
+  function globalConsensus(key) {
+    var subs = globalSubs[key] || [];
+    if (!subs.length) { return undefined; }
+    var first = subs[0].get();
+    return subs.every(function (s) { return sameValue(s.get(), first); }) ? first : undefined;
+  }
+  function setGlobal(key, value) {
+    (globalSubs[key] || []).forEach(function (s) { s.set(value); });
+  }
+  // Called whenever one table changes on its own, so the report-level control
+  // stops claiming a value the tables no longer share.
+  var syncGlobals = function () {};
 
   function statField(stat, reportBase) {
     if (stat === "pct") { return constants.pct_field[reportBase] || "eligible_pct"; }
@@ -437,16 +461,134 @@ function rrInit() {
     rows.forEach(function (r) { total += Number(r.n) || 0; });
     return total <= (Number(rows[0].valid_n) || 0) + 0.5;
   }
-  // include_empty_codes is written into the CSV, so the browser can only take the
-  // n = 0 rows away again -- it cannot invent ones the frequencies stage never
-  // wrote. Unchecking the box therefore previews the off state without a re-run.
-  function hasEmptyRows(rows) {
-    return (rows || []).some(function (r) { return (Number(r.n) || 0) === 0; });
-  }
   function dropEmpty(rows, includeEmpty) {
     if (includeEmpty) { return rows; }
     var kept = rows.filter(function (r) { return (Number(r.n) || 0) !== 0; });
     return kept.length ? kept : rows;
+  }
+  var K = "\u0001";
+  // A CSV describes answers people gave, so a code nobody chose leaves no trace in
+  // it. The universe blob carries what the question *defines*, which is what lets
+  // the checkbox add these rows here rather than only asking for a re-run.
+  //
+  // Position matters: appending the missing codes would scatter a rating scale.
+  // So when a column's rows already run in survey order, the block is rebuilt in
+  // that order; when they don't (a count sort), the zeros go last, which is where
+  // a count sort puts them anyway.
+  function fillEmpty(rows, universe, includeEmpty) {
+    if (!includeEmpty || !universe || !universe.length) { return rows; }
+    var byBlock = {}, blockOrder = [];
+    var groups = [], groupSeen = {};
+    rows.forEach(function (r) {
+      var g = r.group_codes || "";
+      if (!(g in groupSeen)) { groupSeen[g] = true; groups.push(g); }
+      var key = g + K + (r.column || "");
+      if (!(key in byBlock)) { byBlock[key] = []; blockOrder.push(key); }
+      byBlock[key].push(r);
+    });
+    function blockFor(g, u) {
+      var existing = byBlock[g + K + u.column] || [];
+      var idx = {}, have = {};
+      u.codes.forEach(function (c, i) { idx[c[0]] = i; });
+      existing.forEach(function (r) { have[String(r.response_code || "")] = r; });
+      var missing = u.codes.filter(function (c) { return !(c[0] in have); });
+      if (!missing.length) { return existing; }
+      // Bases are respondent counts, so they are copied from a sibling row -- one
+      // in the same column where there is one, else any row of the same group.
+      var sibling = existing[0] || null;
+      if (!sibling) {
+        for (var i = 0; i < blockOrder.length && !sibling; i++) {
+          if (blockOrder[i].indexOf(g + K) === 0) { sibling = byBlock[blockOrder[i]][0]; }
+        }
+      }
+      function synth(code, label) {
+        var r = {};
+        if (sibling) { for (var k in sibling) { r[k] = sibling[k]; } }
+        r.column = u.column;
+        r.attribute = u.attribute || "";
+        r.response_code = code;
+        r.response_label = label;
+        r.n = 0;
+        r.valid_pct = 0; r.eligible_pct = 0; r.total_pct = 0;
+        // A single-answer column with no rows at all had no answers, so its Valid n
+        // is genuinely zero; a multi-select's is the question-level total, which
+        // the sibling already carries.
+        if (!existing.length && !u.multi_select) { r.valid_n = 0; }
+        return r;
+      }
+      var known = existing.filter(function (r) { return String(r.response_code || "") in idx; });
+      var inOrder = known.every(function (r, i) {
+        return i === 0 || idx[String(known[i - 1].response_code)] < idx[String(r.response_code)];
+      });
+      if (!inOrder) {
+        return existing.concat(missing.map(function (c) { return synth(c[0], c[1]); }));
+      }
+      var merged = u.codes.map(function (c) { return have[c[0]] || synth(c[0], c[1]); });
+      // Codes outside the defined set (a write-in sharing the column) keep their
+      // place at the end rather than being dropped.
+      existing.forEach(function (r) {
+        if (!(String(r.response_code || "") in idx)) { merged.push(r); }
+      });
+      return merged;
+    }
+    var out = [], emitted = {};
+    groups.forEach(function (g) {
+      universe.forEach(function (u) {
+        emitted[g + K + u.column] = true;
+        out = out.concat(blockFor(g, u));
+      });
+      blockOrder.forEach(function (key) {
+        if (key.indexOf(g + K) === 0 && !emitted[key]) { out = out.concat(byBlock[key]); }
+      });
+    });
+    return out.length ? out : rows;
+  }
+  // Row order the browser can impose on its own. survey_order needs the universe
+  // -- the CSV carries no notion of the designer's choice order -- and count_* are
+  // the same comparison the n column header does.
+  function applyRowOrder(rows, presentation, universe) {
+    var order = presentation.row_order;
+    if (!order || order === "auto") { return rows; }
+    if (order === "response_order") {
+      var pos = {};
+      (presentation.response_order || []).forEach(function (c, i) { pos[String(c)] = i; });
+      // Codes the list does not name keep their existing order, after the ones
+      // it does -- the same rule the frequencies stage applies.
+      var listed = [], rest = [];
+      rows.forEach(function (r) {
+        (String(r.response_code || "") in pos ? listed : rest).push(r);
+      });
+      listed.sort(function (a, b) {
+        return pos[String(a.response_code || "")] - pos[String(b.response_code || "")];
+      });
+      return listed.concat(rest);
+    }
+    if (order === "count_desc" || order === "count_asc") {
+      var sign = order === "count_asc" ? 1 : -1;
+      return rows.slice().sort(function (a, b) {
+        return sign * ((Number(a.n) || 0) - (Number(b.n) || 0));
+      });
+    }
+    if (order !== "survey_order" || !universe || !universe.length) { return rows; }
+    var rank = {};
+    universe.forEach(function (u) {
+      u.codes.forEach(function (c, i) { rank[u.column + K + c[0]] = i; });
+    });
+    return rows.slice().sort(function (a, b) {
+      var ra = rank[(a.column || "") + K + String(a.response_code || "")];
+      var rb = rank[(b.column || "") + K + String(b.response_code || "")];
+      if (ra === undefined && rb === undefined) { return 0; }
+      if (ra === undefined) { return 1; }
+      if (rb === undefined) { return -1; }
+      return ra - rb;
+    });
+  }
+  // The rows a table shows: fill in, order, drop, hide -- in that sequence, so the
+  // Total row and any column sort operate on exactly what is displayed.
+  function shownRows(allRows, presentation, universe) {
+    var rows = fillEmpty(allRows, universe, presentation.include_empty_codes);
+    rows = applyRowOrder(rows, presentation, universe);
+    return applyHidden(dropEmpty(rows, presentation.include_empty_codes), presentation.hide_codes);
   }
   function applyHidden(rows, hideCodes) {
     if (!hideCodes || !hideCodes.length) { return rows; }
@@ -614,13 +756,11 @@ function rrInit() {
     stats.forEach(function (stat) { tr.appendChild(cellNode(agg, [stat], reportBase, decimals)); });
     return tr;
   }
-  function renderFlatTable(tableEl, allRows, reportBase, presentation, sort, onSort) {
+  function renderFlatTable(tableEl, allRows, reportBase, presentation, sort, onSort, universe) {
     var thead = tableEl.querySelector("thead tr");
     var tbody = tableEl.querySelector("tbody");
     var decimals = presentation.pct_decimals;
-    // Hidden codes drop out before anything else, so the Total row and the sort
-    // both operate on exactly what is displayed.
-    var rows = applyHidden(dropEmpty(allRows, presentation.include_empty_codes), presentation.hide_codes);
+    var rows = shownRows(allRows, presentation, universe);
     if (!rows.length) { rows = allRows; }
     var hasAttr = hasAttributeIn(rows);
     var stats = (presentation.stats && presentation.stats.length) ? presentation.stats : constants.default_flat_stats;
@@ -645,13 +785,20 @@ function rrInit() {
       var totalAfter = buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase, decimals);
       if (totalAfter) { tbody.appendChild(totalAfter); }
     }
+    return sortItems(rows, sort, function (row) { return flatValueOf(row, sort.key, reportBase); });
   }
 
   // ---- grouped (crosstab) table ----
-  function pivotGrouped(rows, overallRows, presentation, reportBase) {
+  function pivotGrouped(rows, overallRows, presentation, reportBase, universe) {
     var nField = constants.n_field[reportBase] || "eligible_n";
-    rows = dropEmpty(rows, presentation.include_empty_codes);
-    if (overallRows) { overallRows = dropEmpty(overallRows, presentation.include_empty_codes); }
+    // Filling and ordering happen per group, so they run before the pivot; the
+    // Overall column is its own single-group table and gets the same treatment.
+    rows = applyRowOrder(dropEmpty(fillEmpty(rows, universe, presentation.include_empty_codes),
+                                   presentation.include_empty_codes), presentation, universe);
+    if (overallRows) {
+      overallRows = applyRowOrder(dropEmpty(fillEmpty(overallRows, universe, presentation.include_empty_codes),
+                                            presentation.include_empty_codes), presentation, universe);
+    }
     var groupRows = {};
     var groupOrder = [];
     rows.forEach(function (r) {
@@ -817,7 +964,7 @@ function rrInit() {
   }
   function renderGrouped(tableEl, sdata, presentation, sort, onSort) {
     var base = presentation.percent_base || sdata.report_base;
-    var pivot = pivotGrouped(sdata.rows, sdata.overall_rows, presentation, base);
+    var pivot = pivotGrouped(sdata.rows, sdata.overall_rows, presentation, base, sdata.universe);
     var stats = (presentation.stats && presentation.stats.length) ? presentation.stats : constants.default_cell_stats;
     renderGroupedTable(tableEl, pivot, stats, !!presentation.show_code,
       presentation.orientation || "columns", base, presentation.pct_decimals, sort, onSort);
@@ -1083,7 +1230,16 @@ function rrInit() {
       include: state.include !== false,
       percent_base: state.percent_base,
       include_empty_codes: !!state.include_empty_codes,
+      sort_by: state.row_order || "count_desc",
     };
+    // Emitted unconditionally, so exporting a config and running it back through
+    // the frequencies stage reproduces the order you are looking at rather than
+    // falling back to the default.
+    if (cfg.sort_by === "response_order") {
+      var codes = (state.response_order || []).slice();
+      if (!codes.length && axis && axis.codes && !axis.hasAttr) { codes = axis.codes(); }
+      if (codes.length) { cfg.response_order = codes; }
+    }
     var sc = sortConfig(sort, axis);
     for (var k in sc.keys) { cfg[k] = sc.keys[k]; }
     return { cfg: cfg, note: sc.note };
@@ -1173,16 +1329,18 @@ function rrInit() {
           else { out.values.hide_codes = v.map(String); }
           break;
         case "sort_by":
-          // count_asc/count_desc are exactly the browser's own n-column sort.
-          if (v === "count_asc" || v === "count_desc") {
-            out.values.sort = { key: { kind: "stat", stat: "n" }, dir: v === "count_asc" ? "asc" : "desc" };
-          } else if (v === "survey_order" || v === "response_order" || v === "auto") {
-            out.values.sort = null;  // the CSV is already in the configured order
-            out.ignored.push(key + ": \\"" + v + "\\" is applied when the CSV is written");
+          // All four orders are ones the browser can impose itself, so this drives
+          // the Row order control; a column-header sort still layers on top of it.
+          if (v === "count_asc" || v === "count_desc" || v === "survey_order" || v === "response_order") {
+            out.values.row_order = v;
+            out.values.sort = null;
+          } else if (v === "auto") {
+            out.ignored.push("sort_by: \\"auto\\" resolves to a concrete order when the CSV is written");
           } else { out.errors.push("unknown sort_by: " + v); }
           break;
         case "response_order":
-          out.ignored.push("response_order is applied when the CSV is written");
+          if (!Array.isArray(v)) { out.errors.push("response_order must be a list"); }
+          else { out.values.response_order = v.map(String); }
           break;
         default:
           out.ignored.push("unknown key: " + key);
@@ -1317,7 +1475,7 @@ function rrInit() {
       ? "This table's settings, for \\"" + questionId + "\\"'s block in qualtrics_frequency_config.json."
       : "This breakout's \\"tables\\" entry (group_by: [" + groupByText + "]) for \\"" + questionId + "\\".";
     var qHint = "Question-level keys for \\"" + questionId + "\\" (not the \\"tables\\" entry). " +
-      "Applied when frequency tables are generated \\u2014 re-run the frequencies stage for these.";
+      "These are what the frequencies stage reads \\u2014 re-run it to put them in the CSVs.";
 
     // Applying reads the block back in: edits here drive the table, not just
     // the clipboard.
@@ -1337,18 +1495,123 @@ function rrInit() {
     return refresh;
   }
 
-  // Zero-response rows exist in the CSV only when the frequencies stage put them
-  // there, so the box can preview them away but not conjure them up. Its value is
-  // always written to the question config, which is what a re-run reads.
-  function addEmptyCodesBox(row, state, rerender, hasEmpty) {
-    var box = addCheckbox(row, "Zero-response codes", state.include_empty_codes,
-      function (v) { state.include_empty_codes = v; rerender(); });
-    box.title = hasEmpty
-      ? "Show the n = 0 rows for codes the survey defines but nobody chose."
-      : "This table has no zero-response rows. Ticking this writes include_empty_codes " +
-        "into the question config; re-run the frequencies stage to fill them in.";
-    return box;
+  // ---- option controls -------------------------------------------------
+  // One description of every option a control can drive, used to build both a
+  // table's own controls and the report-level ones. Keeping them in a single
+  // list is what stops the two sets from drifting apart as options are added.
+  var MIXED = "\u0000mixed";
+  var ROW_ORDER_OPTS = [
+    ["survey_order", "Survey order"],
+    ["count_desc", "Count (high to low)"],
+    ["count_asc", "Count (low to high)"],
+    ["response_order", "Custom order"],
+  ];
+  function optionSpecs(ctx) {
+    var hasUniverse = !!(ctx.universe && ctx.universe.length);
+    return [
+      { key: "include", kind: "bool", label: "Show this table", global: "Show all tables" },
+      { key: "show_code", kind: "bool", label: "Show code column", global: "Show code columns" },
+      { key: "include_empty_codes", kind: "bool", label: "Zero-response codes",
+        disabled: !hasUniverse,
+        title: hasUniverse
+          ? "Show a row for every code the survey defines, including the ones nobody chose."
+          : "These answers are verbatim text, not a fixed set of codes, so there is nothing to fill in." },
+      { key: "row_order", kind: "select", label: "Row order", options: ROW_ORDER_OPTS,
+        title: "Survey order needs the question's defined codes; Custom order is the " +
+               "response_order the CSV was written with. Clicking a column header still " +
+               "sorts on top of this." },
+      { key: "orientation", kind: "select", label: "Orientation", groupedOnly: true,
+        options: [["columns", "Columns"], ["rows", "Rows"]] },
+      { key: "overall", kind: "position", label: "Overall column/row", groupedOnly: true,
+        disabled: !ctx.hasOverall,
+        title: ctx.hasOverall ? "" :
+          "No ungrouped table was generated for this question, so there is no Overall data to show." },
+      { key: "response_total", kind: "position", global: "Total row",
+        label: ctx.grouped ? "Response total" : "Total row" },
+      { key: "percent_base", kind: "select", label: "Reporting base", options: BASE_OPTS },
+      { key: "pct_decimals", kind: "number", label: "% decimals", global: "Decimal places" },
+    ].filter(function (sp) { return ctx.grouped || !sp.groupedOnly; });
   }
+  // mixed=true builds the report-level variant, which has to be able to say the
+  // tables disagree without picking one of their values for them.
+  function buildOption(row, sp, initial, onSet, mixed) {
+    var el;
+    var label = mixed ? (sp.global || sp.label) : sp.label;
+    if (sp.kind === "bool") {
+      el = addCheckbox(row, label, !!initial, onSet);
+    } else if (sp.kind === "number") {
+      el = addNumber(row, label, initial === undefined ? "" : initial, 0,
+        constants.pct_decimals_max, onSet);
+    } else {
+      var opts = (sp.kind === "position" ? POSITION_OPTS : sp.options).slice();
+      if (mixed) { opts = [[MIXED, "(mixed)"]].concat(opts); }
+      el = addSelect(row, label, "", opts, function (v) {
+        if (v === MIXED) { return; }
+        onSet(sp.kind === "position" ? (v || false) : v);
+      });
+    }
+    if (sp.disabled) { el.disabled = true; }
+    if (sp.title) { el.title = sp.title; }
+    syncOption(el, sp, initial);
+    return el;
+  }
+  function syncOption(el, sp, value) {
+    if (sp.kind === "bool") {
+      el.indeterminate = value === undefined;
+      el.checked = value === undefined ? false : !!value;
+    } else if (sp.kind === "number") {
+      el.value = value === undefined ? "" : String(value);
+      el.placeholder = value === undefined ? "mixed" : "";
+    } else if (value === undefined) {
+      el.value = MIXED;
+    } else {
+      el.value = sp.kind === "position" ? (value || "") : value;
+    }
+  }
+  // A table's own control bar: every spec bound to that table's state, and
+  // registered so a report-level control can drive it too.
+  function buildOptionRow(row, specs, state, rerender) {
+    var els = {};
+    function write(sp, v) {
+      state[sp.key] = v;
+      // Switching orientation swaps which axis the rows are, so a sort key from
+      // the previous orientation no longer addresses a real column.
+      if (sp.key === "orientation") { state.sort = null; }
+    }
+    specs.forEach(function (sp) {
+      els[sp.key] = buildOption(row, sp, state[sp.key], function (v) {
+        write(sp, v);
+        rerender();
+        syncGlobals();
+      }, false);
+      // A disabled control has nothing to offer a global one, and registering it
+      // would let "apply to all" write a value this table cannot honor.
+      if (!sp.disabled) {
+        registerGlobal(sp.key, function (v) {
+          write(sp, v);
+          // The table's own control has to move too, or it goes on reporting the
+          // value it had before the report-level control overrode it.
+          syncOption(els[sp.key], sp, v);
+          rerender();
+        }, function () { return state[sp.key]; });
+      }
+    });
+    return function () {
+      specs.forEach(function (sp) { syncOption(els[sp.key], sp, state[sp.key]); });
+    };
+  }
+  // Controls start folded away: a report is for reading, and an always-open bar
+  // above every table is noise until you want to change something.
+  function buildPanel(host, summaryText) {
+    var details = document.createElement("details");
+    details.className = "rr-panel";
+    var summary = document.createElement("summary");
+    summary.textContent = summaryText;
+    details.appendChild(summary);
+    host.appendChild(details);
+    return details;
+  }
+
   // ---- per-section wiring ----
   function initFlatSection(toolsEl, slug) {
     var dataNode = document.getElementById(slug + "-data");
@@ -1364,6 +1627,9 @@ function rrInit() {
       hide_codes: (pres.hide_codes || []).slice(),
       percent_base: sdata.report_base,
       include_empty_codes: !!pres.include_empty_codes,
+      // What the CSV is already sorted by, so the control starts by describing
+      // the table rather than proposing a change to it.
+      row_order: pres.sort_by || "count_desc",
     };
     var state = {
       show_code: effective.show_code,
@@ -1373,6 +1639,8 @@ function rrInit() {
       hide_codes: effective.hide_codes.slice(),
       percent_base: effective.percent_base,
       include_empty_codes: effective.include_empty_codes,
+      row_order: effective.row_order,
+      response_order: [],
       include: true,
       sort: null,
     };
@@ -1383,60 +1651,49 @@ function rrInit() {
       tableEl.parentNode.querySelectorAll("table.writein, div.meta + table")));
     var metaEl = toolsEl.previousElementSibling;
     if (!metaEl || !metaEl.classList || !metaEl.classList.contains("meta")) { metaEl = null; }
-    registerDecimals(function (d) { state.pct_decimals = d; rerender(); }, function () { return state.pct_decimals; });
-    registerBase(function (v) { state.percent_base = v; rerender(); }, function () { return state.percent_base; });
-
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
       hideables.forEach(function (el) { el.hidden = !state.include; });
-      renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort);
+      renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort, sdata.universe);
       if (metaEl) {
-        // Deliberately not dropEmpty'd: a zero-response row holds no respondents,
-        // so removing it moves no base and counting it as "hidden" would imply
-        // answers went missing.
-        var shown = applyHidden(sdata.rows, state.hide_codes);
-        if (!shown.length) { shown = sdata.rows; }
+        // Counted against the filled-in row set, and deliberately not dropEmpty'd:
+        // a zero-response row holds no respondents, so removing it moves no base
+        // and calling it "hidden" would imply answers went missing.
+        var filled = fillEmpty(sdata.rows, sdata.universe, state.include_empty_codes);
+        var shown = applyHidden(filled, state.hide_codes);
+        if (!shown.length) { shown = filled; }
         metaEl.textContent = sdata.meta_prefix +
-          baseCaption(shown, state.percent_base, sdata.rows.length - shown.length);
+          baseCaption(shown, state.percent_base, filled.length - shown.length);
       }
       refreshDefs();
       refreshSnippet();
       refreshFullConfig();
     }
 
+    var panel = buildPanel(toolsEl, "Modify this table");
     var row1 = document.createElement("div");
     row1.className = "rr-row";
-    var incBox = addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
-    var codeBox = addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
-    var emptyBox = addEmptyCodesBox(row1, state, function () { rerender(); }, hasEmptyRows(sdata.rows));
-    var totalSel = addSelect(row1, "Total row", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
-    var baseSel = addSelect(row1, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
-    var decInput = addNumber(row1, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
-      function (v) { state.pct_decimals = v; syncDecimals(v); rerender(); });
-    toolsEl.appendChild(row1);
+    var specs = optionSpecs({ grouped: false, universe: sdata.universe });
+    var syncOpts = buildOptionRow(row1, specs, state, rerender);
+    panel.appendChild(row1);
 
     var row2 = document.createElement("div");
     row2.className = "rr-row";
-    var syncChips = addStatChips(row2, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); });
-    toolsEl.appendChild(row2);
-    var syncHide = addHidePicker(toolsEl, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
+    var syncChips = addStatChips(row2, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); syncGlobals(); });
+    panel.appendChild(row2);
+    registerGlobal("stats", function (v) { state.stats = v.slice(); syncChips(state.stats); rerender(); }, function () { return state.stats; });
+    var syncHide = addHidePicker(panel, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
 
     // A config read back in has to move the controls too, or they would
     // misreport the table they are supposed to be driving.
     function syncControls() {
-      incBox.checked = state.include;
-      codeBox.checked = state.show_code;
-      emptyBox.checked = state.include_empty_codes;
-      totalSel.value = state.response_total || "";
-      baseSel.value = state.percent_base;
-      decInput.value = String(state.pct_decimals);
+      syncOpts();
       syncChips(state.stats);
       syncHide(state.hide_codes);
-      syncBase(state.percent_base);
-      syncDecimals(state.pct_decimals);
+      syncGlobals();
     }
 
-    var refreshDefs = buildDefsPanel(toolsEl, function () { return state.percent_base; }, "flat",
+    var refreshDefs = buildDefsPanel(panel, function () { return state.percent_base; }, "flat",
       function () { return state.stats; });
     function flatState() { return state; }
     function applyToSection(obj, kind) {
@@ -1445,7 +1702,7 @@ function rrInit() {
       if (applied) { syncControls(); rerender(); }
       return { applied: applied, errors: r.errors, ignored: r.ignored };
     }
-    var refreshSnippet = buildSnippetPanel(toolsEl, "flat", sdata.question_id, [],
+    var refreshSnippet = buildSnippetPanel(panel, "flat", sdata.question_id, [],
       flatState,
       function () { return state.sort; },
       function () {
@@ -1491,6 +1748,9 @@ function rrInit() {
       hide_codes: (pres.hide_codes || []).slice(),
       percent_base: sdata.report_base,
       include_empty_codes: !!pres.include_empty_codes,
+      // What the CSV is already sorted by, so the control starts by describing
+      // the table rather than proposing a change to it.
+      row_order: pres.sort_by || "count_desc",
     };
     var state = {
       show_code: effective.show_code,
@@ -1502,15 +1762,14 @@ function rrInit() {
       hide_codes: effective.hide_codes.slice(),
       percent_base: effective.percent_base,
       include_empty_codes: effective.include_empty_codes,
+      row_order: effective.row_order,
+      response_order: [],
       include: true,
       sort: null,
     };
     var metaEl = toolsEl.previousElementSibling;
     if (!metaEl || !metaEl.classList || !metaEl.classList.contains("meta")) { metaEl = null; }
     var lastPivot = null;
-    registerDecimals(function (d) { state.pct_decimals = d; rerender(); }, function () { return state.pct_decimals; });
-    registerBase(function (v) { state.percent_base = v; rerender(); }, function () { return state.percent_base; });
-
     // Switching orientation swaps which axis the rows are, so a sort key from the
     // previous orientation no longer addresses a real column.
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
@@ -1527,56 +1786,32 @@ function rrInit() {
       refreshFullConfig();
     }
 
+    var panel = buildPanel(toolsEl, "Modify this table");
     var row1 = document.createElement("div");
     row1.className = "rr-row";
-    var incBox = addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
-    var codeBox = addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
-    var emptyBox = addEmptyCodesBox(row1, state, function () { rerender(); },
-      hasEmptyRows((sdata.rows || []).concat(sdata.overall_rows || [])));
-    var orientSel = addSelect(row1, "Orientation", state.orientation, [["columns", "Columns"], ["rows", "Rows"]], function (v) {
-      state.orientation = v;
-      state.sort = null; // the old sort key addressed the other axis's columns
+    var specs = optionSpecs({ grouped: true, universe: sdata.universe, hasOverall: hasOverall });
+    var syncOpts = buildOptionRow(row1, specs, state, function () {
       rerender();
     });
-    toolsEl.appendChild(row1);
+    panel.appendChild(row1);
 
     var row2 = document.createElement("div");
     row2.className = "rr-row";
-    var overallSelect = addSelect(row2, "Overall column/row", state.overall || "", POSITION_OPTS, function (v) { state.overall = v || false; rerender(); });
-    if (!hasOverall) {
-      overallSelect.disabled = true;
-      overallSelect.title = "No ungrouped table was generated for this question, so there is no Overall data to show.";
-    }
-    var totalSel = addSelect(row2, "Response total", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
-    var baseSel = addSelect(row2, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
-    var decInput = addNumber(row2, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
-      function (v) { state.pct_decimals = v; syncDecimals(v); rerender(); });
-    toolsEl.appendChild(row2);
-
-    var row3 = document.createElement("div");
-    row3.className = "rr-row";
-    var syncChips = addStatChips(row3, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); });
-    toolsEl.appendChild(row3);
-    var syncHide = addHidePicker(toolsEl, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
+    var syncChips = addStatChips(row2, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); syncGlobals(); });
+    panel.appendChild(row2);
+    registerGlobal("stats", function (v) { state.stats = v.slice(); syncChips(state.stats); rerender(); }, function () { return state.stats; });
+    var syncHide = addHidePicker(panel, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
 
     // A config read back in has to move the controls too, or they would
     // misreport the table they are supposed to be driving.
     function syncControls() {
-      incBox.checked = state.include;
-      codeBox.checked = state.show_code;
-      emptyBox.checked = state.include_empty_codes;
-      orientSel.value = state.orientation;
-      overallSelect.value = state.overall || "";
-      totalSel.value = state.response_total || "";
-      baseSel.value = state.percent_base;
-      decInput.value = String(state.pct_decimals);
+      syncOpts();
       syncChips(state.stats);
       syncHide(state.hide_codes);
-      syncBase(state.percent_base);
-      syncDecimals(state.pct_decimals);
+      syncGlobals();
     }
 
-    var refreshDefs = buildDefsPanel(toolsEl, function () { return state.percent_base; }, "grouped",
+    var refreshDefs = buildDefsPanel(panel, function () { return state.percent_base; }, "grouped",
       function () { return state.stats; });
     var groupByList = sdata.group_by || [];
     function groupedState() { return state; }
@@ -1586,7 +1821,7 @@ function rrInit() {
       if (applied) { syncControls(); rerender(); }
       return { applied: applied, errors: r.errors, ignored: r.ignored };
     }
-    var refreshSnippet = buildSnippetPanel(toolsEl, "grouped", sdata.question_id, groupByList,
+    var refreshSnippet = buildSnippetPanel(panel, "grouped", sdata.question_id, groupByList,
       groupedState,
       function () { return state.sort; },
       function () {
@@ -1707,36 +1942,57 @@ function rrInit() {
     return { questions: out };
   }
 
-  // Report-level control, wired after the sections so every setter is registered.
+  // Report-level controls, wired after the sections so every setter is registered.
   var globalHost = document.getElementById("rr-global");
-  if (globalHost && decimalsSubscribers.length) {
+  if (globalHost && (globalSubs.percent_base || []).length) {
+    var gPanel = buildPanel(globalHost, "Modify all tables");
+    // Built from the same specs the tables use, then narrowed to the options at
+    // least one table registered -- which is how orientation and the Overall
+    // position stay out of a report with no crosstabs, and how a per-question
+    // option like hide_codes never turns up here at all.
+    var gspecs = optionSpecs({ grouped: true, universe: [1], hasOverall: true })
+      .filter(function (sp) { return (globalSubs[sp.key] || []).length; });
     var row = document.createElement("div");
     row.className = "rr-row";
-    var seed = decimalsSubscribers[0].get();
-    var uniform = decimalsSubscribers.every(function (s) { return s.get() === seed; });
-    globalDecimalsInput = addNumber(row, "Decimal places on all percentages",
-      uniform ? seed : "", 0, constants.pct_decimals_max, function (v) {
-        decimalsSubscribers.forEach(function (s) { s.set(v); });
-      });
-    if (!uniform) {
-      globalDecimalsInput.placeholder = "mixed";
-      globalDecimalsInput.title = "Tables currently differ; setting this applies to all of them.";
-    }
-    var bases = baseSubscribers.map(function (s) { return s.get(); });
-    var baseUniform = bases.every(function (v) { return v === bases[0]; });
-    // A "(mixed)" placeholder so the control can show that questions disagree
-    // without silently claiming one of them; picking it is a no-op.
-    globalBaseSelect = addSelect(row, "Reporting base", baseUniform ? bases[0] : "",
-      [["", "(mixed)"]].concat(BASE_OPTS), function (v) {
-        if (!v) { return; }
-        baseSubscribers.forEach(function (s) { s.set(v); });
-      });
+    var gEls = {};
+    gspecs.forEach(function (sp) {
+      gEls[sp.key] = buildOption(row, sp, globalConsensus(sp.key), function (v) {
+        setGlobal(sp.key, v);
+        syncGlobals();
+      }, true);
+    });
+    gPanel.appendChild(row);
 
-    var note = document.createElement("span");
+    var row2 = document.createElement("div");
+    row2.className = "rr-row";
+    var statSeed = globalConsensus("stats") || (globalSubs.stats[0] && globalSubs.stats[0].get()) || [];
+    var syncGChips = addStatChips(row2, constants.stat_order, statSeed,
+      globalConsensus("percent_base") || constants.report_bases[0], function (stats) {
+        setGlobal("stats", stats);
+        syncGlobals();
+      });
+    gPanel.appendChild(row2);
+
+    var note = document.createElement("div");
     note.className = "rr-note";
-    note.textContent = "Each table can override these in its own controls.";
-    row.appendChild(note);
-    globalHost.appendChild(row);
+    gPanel.appendChild(note);
+    // Only hide_codes stays per-table: it names this question's own response
+    // codes, which mean nothing to the next question.
+    var NOTE = "Applies to every table at once; each table can then override it in " +
+      "its own controls. Hiding specific rows stays per-table, since the codes are " +
+      "the question's own.";
+    syncGlobals = function () {
+      gspecs.forEach(function (sp) { syncOption(gEls[sp.key], sp, globalConsensus(sp.key)); });
+      var st = globalConsensus("stats");
+      if (st) { syncGChips(st); }
+      var mixed = gspecs.filter(function (sp) { return globalConsensus(sp.key) === undefined; })
+        .map(function (sp) { return (sp.global || sp.label).toLowerCase(); });
+      if (st === undefined) { mixed.push("statistics"); }
+      note.textContent = mixed.length
+        ? NOTE + " Tables currently differ on: " + mixed.join(", ") + "."
+        : NOTE;
+    };
+    syncGlobals();
 
     // The whole report as one config file, tracking every control on the page.
     var full = document.createElement("details");
@@ -1748,9 +2004,9 @@ function rrInit() {
     var setFull = snippetPart(full,
       "Every question as currently shown \\u2014 paste over qualtrics_frequency_config.json, " +
       "or paste a config in and press Apply to rearrange the report to match. " +
-      "include, percent_base, sort_by, response_order and include_empty_codes are applied " +
-      "by the frequencies stage, so re-run it for those; the rest apply on the next " +
-      "report render.",
+      "include, percent_base, sort_by, response_order and include_empty_codes are what " +
+      "the frequencies stage reads when it writes the CSVs; the report applies all of " +
+      "them here too, so re-run that stage only when you want the CSVs to match.",
       applyReportConfig);
     refreshFullConfig = function () { setFull(buildReportConfig()); };
     refreshFullConfig();
@@ -1798,6 +2054,7 @@ def _render_question_section(
     writein_rows: list[dict[str, str]],
     presentation: dict,
     slug: str,
+    universe: list[dict] | None = None,
 ) -> str:
     first = rows[0]
     question_id = first.get("question_id") or qkey
@@ -1874,6 +2131,10 @@ def _render_question_section(
             # Unfiltered, so the browser can re-apply or undo hide_codes itself.
             "rows": all_rows,
             "codes": _code_choices(all_rows),
+            # Every code the question defines, so the browser can show the ones
+            # nobody chose and offer survey order -- neither is derivable from
+            # rows that only describe answers people gave.
+            "universe": universe or [],
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -1897,6 +2158,7 @@ def _render_grouped_section(
     conditional: bool,
     presentation: dict,
     overall_rows: list[dict[str, str]] | None,
+    universe: list[dict] | None = None,
 ) -> str:
     """Pivot a long grouped frequency table into a wide crosstab.
 
@@ -2041,6 +2303,10 @@ def _render_grouped_section(
             "rows": all_rows,
             "overall_rows": all_overall_rows or None,
             "codes": _code_choices(all_rows),
+            # Every code the question defines, so the browser can show the ones
+            # nobody chose and offer survey order -- neither is derivable from
+            # rows that only describe answers people gave.
+            "universe": universe or [],
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -2082,6 +2348,7 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     conditional = set((manifest.get("conditional_questions") or {}).keys())
     presentation_map = manifest.get("table_presentation") or {}
     freq_opts_map = manifest.get("table_frequency_opts") or {}
+    universe_map = manifest.get("table_code_universe") or {}
     data_path = manifest.get("data_path", "(unknown)")
 
     # Overall (ungrouped) rows by question_key, for the optional Overall column.
@@ -2123,11 +2390,13 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     writeins = _load_writeins(run_dir / "open_text_outputs")
     sections = "".join(
         _render_grouped_section(
-            slug, rows, qkey in conditional, _presentation(slug), overall_by_qkey.get(qkey)
+            slug, rows, qkey in conditional, _presentation(slug),
+            overall_by_qkey.get(qkey), universe_map.get(slug),
         )
         if is_grouped
         else _render_question_section(
-            qkey, rows, qkey in conditional, writeins.get(qkey, []), _presentation(slug), slug
+            qkey, rows, qkey in conditional, writeins.get(qkey, []), _presentation(slug), slug,
+            universe_map.get(slug),
         )
         for _, slug, qkey, is_grouped, rows in blocks
     )

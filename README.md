@@ -175,11 +175,22 @@ python -m qualtrics_pipeline.frequencies \
 
 ### Trying formatting options live in the browser
 
-Every question's table in `report.html` has a small control bar (show/hide the
-response-code column, which stats to display, a total row, and — for grouped
-crosstabs — orientation and an Overall column/row) that re-renders that table
-instantly in the browser as you toggle it. Nothing you change there is saved
-automatically — it's for trying out different formats before committing to one.
+Every question's table in `report.html` has a **Modify this table** panel, folded
+away until you open it, holding every option that question's config block accepts.
+Toggling one re-renders that table instantly. Nothing you change is saved
+automatically — it's for trying out formats before committing to one.
+
+The panel offers: show/hide the table, show/hide the response-code column,
+zero-response codes, row order, the total row, the reporting base, decimal places,
+which stats to display, which response codes to hide, and — for grouped crosstabs
+— orientation and an Overall column/row.
+
+**Modify all tables**, at the top of the report, has the same controls wired to
+every table at once. Where the tables currently disagree a control reads
+`(mixed)` and a note names which options differ, so it never claims a value the
+report doesn't have; setting it applies to all of them, and each table can then
+override it in its own panel. Hiding specific rows is the one option that stays
+per-table — the codes are the individual question's own.
 
 Click any column header to sort by it: ascending, then descending, then back to
 the configured order. Aggregate rows stay put — the Total row and a grouped
@@ -189,8 +200,11 @@ never mixed into the sort.
 "Show statistic definitions" explains what each displayed column means and which
 denominator it uses, including the base counts a percentage divides by.
 
-**Decimal places.** A control at the top of the report sets the precision of every
-percentage at once; each table's own "% decimals" box overrides it for that table.
+**Row order.** Survey order, count high-to-low, count low-to-high, or the custom
+`response_order` the table was built with. All four are applied in the browser, so
+you can see a rating scale in scale order without regenerating anything; the value
+is written to `sort_by` in the config so a re-run reproduces it. A column-header
+sort layers on top of whatever this is set to.
 
 **Reporting base.** Tables show a **single percentage column**, against the base
 you pick — Valid (of those who answered), Eligible (of those shown the question),
@@ -209,7 +223,8 @@ To compare bases side by side (useful when checking a conditional question), tic
 percentage on show, ★ marks the one matching the reporting base.
 
 **Hiding N/A rows.** "Hide rows" lists the response codes present in that table
-with their labels; tick the ones to omit. Codes are offered rather than assumed
+with their labels, ordered by code (numerically, so 10 follows 9), and tick the
+ones to omit. Codes are offered rather than assumed
 because what counts as N/A is survey-specific — `-1` is a genuine "Other" option
 in some exports. When rows are hidden, **Valid n becomes the number who chose one
 of the responses still shown**, and Valid % is recomputed against it; Eligible %
@@ -217,9 +232,15 @@ and Total % are prevalence over people and do not change. On multi-select
 questions a respondent can pick several options, so that count isn't derivable
 from the table — there the row is hidden but Valid n is left alone.
 
-**Show/hide a table.** Each table's controls start with a "Show this table"
+**Show/hide a table.** Each table's panel starts with a "Show this table"
 checkbox (on by default). Unchecking it hides the table in the page and sets
 `include: false` for that question in the exported config.
+
+**Not offered in the panels.** `tables` / `group_by` build a breakout that does
+not exist yet, and `text_entry_columns` decides how a write-in column is handled
+before there is anything to render — both need the frequencies stage to run before
+the report has something to show, so they stay config-file edits. `frequency_mode`
+is the superseded spelling of `sort_by` and is honored but not offered.
 
 **Exporting the config.** "Show config for the whole report", at the top, holds
 the complete `qualtrics_frequency_config.json` for the report exactly as you have
@@ -250,8 +271,9 @@ Two kinds of key appear:
   render time, so regenerating the report is enough.
 - **Keys the frequencies stage owns** (`sort_by`, `response_order`,
   `percent_base`, and `include_empty_codes`) always go in the question's block.
-  These are applied when the CSVs are written, so **re-run the frequencies stage**
-  for them to take effect.
+  The report applies all of them in the browser too, so what you see is what the
+  config says; **re-run the frequencies stage** when you want the CSVs themselves
+  to match, since that is where these are stamped in.
   Sorting a grouped table's group axis has no config equivalent and the panel says
   so rather than emitting a key that would not work.
 
@@ -292,9 +314,17 @@ scales and short choice lists. A dropdown can define hundreds of codes (a roster
 a state list) and would get a row for each, so turn it on per question rather than
 in `defaults`.
 
-In the HTML report each table has a **Zero-response codes** checkbox. Unticking it
-previews the table without those rows without a re-run; ticking it on a table that
-has none writes the key into the question config for the next frequencies run.
+In the HTML report each table has a **Zero-response codes** checkbox, and there is
+one for the whole report at the top. It works in both directions without a re-run:
+the frequency manifest publishes each question's defined codes
+(`table_code_universe`), so the browser can add the missing rows itself rather
+than only being able to take them away. The checkbox is disabled for a question
+whose answers are verbatim text, where there is no defined set to fill in.
+
+Filled-in rows land in the right place rather than at the end: when a column's
+rows already run in survey order, the block is rebuilt in that order, so a rating
+scale keeps its scale. Under a count sort the zeros go last, which is where a
+count sort puts them anyway.
 
 ## Percentage bases (computed up front)
 
