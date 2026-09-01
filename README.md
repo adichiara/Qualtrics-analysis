@@ -200,11 +200,18 @@ never mixed into the sort.
 "Show statistic definitions" explains what each displayed column means and which
 denominator it uses, including the base counts a percentage divides by.
 
-**Row order.** Survey order, count high-to-low, count low-to-high, or the custom
-`response_order` the table was built with. All four are applied in the browser, so
-you can see a rating scale in scale order without regenerating anything; the value
-is written to `sort_by` in the config so a re-run reproduces it. A column-header
-sort layers on top of whatever this is set to.
+**Row order.** Survey order, code low-to-high, code high-to-low, count
+high-to-low, count low-to-high, or the custom `response_order` from the config —
+the same vocabulary as `sort_by`, and see the note below on why survey order and
+code order are not the same thing. All of them are applied in the browser, so you
+can see a rating scale in scale order without regenerating anything; the value is
+written to `sort_by` in the config so a re-run reproduces it exactly.
+
+Setting it clears a column-header sort. The header sort runs on top of the row
+order, so leaving one in place would make this control look broken — you pick an
+order and the table doesn't move. "Custom order" is offered only where there is a
+`response_order` list to apply, since picking it anywhere else would be a control
+that visibly does nothing.
 
 **Reporting base.** Tables show a **single percentage column**, against the base
 you pick — Valid (of those who answered), Eligible (of those shown the question),
@@ -222,9 +229,10 @@ To compare bases side by side (useful when checking a conditional question), tic
 `Valid %`, `Eligible %` and `Total %` in the stat toggles. With more than one
 percentage on show, ★ marks the one matching the reporting base.
 
-**Hiding N/A rows.** "Hide rows" lists the response codes present in that table
-with their labels, ordered by code (numerically, so 10 follows 9), and tick the
-ones to omit. Codes are offered rather than assumed
+**Hiding N/A rows.** "Hide rows" lists every response code the table can show —
+including ones nobody chose, so the list doesn't change under you when
+zero-response rows are switched on — with their labels, ordered by code
+(numerically, so 10 follows 9). Tick the ones to omit. Codes are offered rather than assumed
 because what counts as N/A is survey-specific — `-1` is a genuine "Other" option
 in some exports. When rows are hidden, **Valid n becomes the number who chose one
 of the responses still shown**, and Valid % is recomputed against it; Eligible %
@@ -289,8 +297,21 @@ Each question in the frequency config takes a `sort_by` value controlling row or
 - `count_desc` — most frequent first (default for multiple-choice questions)
 - `count_asc` — least frequent first
 - `survey_order` — follow the survey designer's choice order (from `response_labels`); use for ordinal scales (height, rank, sizes) whose codes are not in logical sequence
+- `code_asc` / `code_desc` — order by the response code itself, numerically
 - `response_order` — explicit ordered list supplied in the question's `response_order` field; unlisted codes are appended by `count_desc`
 - `auto` (default) — Matrix questions use `survey_order`, all other types use `count_desc`
+
+**`survey_order` is not code order.** Qualtrics keeps a choice's recode value
+when the designer moves it, so the two diverge as soon as a question is edited:
+an "Other, not listed" option added late can carry code 201 and appear *first*,
+and a reordered scale can run 1, 2, 3, 5, 4. In the example survey they differ
+for 6 of the 9 coded questions. Use `survey_order` when you want the
+questionnaire's own sequence and `code_asc`/`code_desc` when you want the codes
+in numeric order.
+
+Codes that are not numbers sort last under `code_asc` *and* `code_desc`. A
+write-in's "code" is the verbatim answer, so mirroring the sort would open a
+descending table with a block of sentences.
 
 The legacy `frequency_mode` field is still honored (`interval` → `survey_order`, `nominal` → `count_desc`).
 

@@ -165,12 +165,15 @@ def _numeric_sort_key(value: str) -> tuple[int, float | str]:
         return (1, value)
 
 
-def _code_choices(rows: list[dict]) -> list[dict[str, str]]:
-    """The response codes present in a table, for the hide picker.
+def _code_choices(rows: list[dict], universe: list[dict] | None = None) -> list[dict[str, str]]:
+    """The response codes a table can show, for the hide picker.
 
     Offering the actual codes with their labels beats typing a sentinel from
     memory: "-1" is a genuine "Other" option in some exports, so what counts as
     N/A is a per-survey judgement rather than something to hardcode.
+
+    Every defined code is listed, not just the ones somebody chose, so the list
+    does not change out from under you when zero-response rows are switched on.
     """
     out: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -179,6 +182,12 @@ def _code_choices(rows: list[dict]) -> list[dict[str, str]]:
         if code and code not in seen:
             seen.add(code)
             out.append({"code": code, "label": r.get("response_label", "")})
+    for entry in universe or []:
+        for code, label in entry.get("codes") or []:
+            code = str(code).strip()
+            if code and code not in seen:
+                seen.add(code)
+                out.append({"code": code, "label": label})
     # By code, not by the table's row order: the picker is a lookup ("hide -1"),
     # and a list that reorders itself whenever the table is re-sorted is one you
     # have to re-scan every time. Numbers sort numerically, so 10 follows 9;
@@ -226,6 +235,17 @@ def _constants_blob() -> str:
         # same vocabulary the config validator uses.
         "stat_keys": sorted(STAT_KEYS),
         "orientations": ["columns", "rows"],
+        # Row orders the browser can impose itself, in the order the control
+        # lists them. Sourced from the frequencies stage's own vocabulary so a
+        # new mode cannot be added there without appearing here.
+        "row_orders": [
+            ["survey_order", "Survey order"],
+            ["code_asc", "Code (low to high)"],
+            ["code_desc", "Code (high to low)"],
+            ["count_desc", "Count (high to low)"],
+            ["count_asc", "Count (low to high)"],
+            ["response_order", "Custom order"],
+        ],
         "positions": [False, "before", "after"],
         "pct_field": _PCT_FIELD,
         "n_field": _N_FIELD,
@@ -568,6 +588,23 @@ function rrInit() {
       return rows.slice().sort(function (a, b) {
         return sign * ((Number(a.n) || 0) - (Number(b.n) || 0));
       });
+    }
+    // Code order is the response code itself, which for most questions is not
+    // the order the choices appear in: a choice keeps its recode value when the
+    // designer moves it, so a scale can run 1, 2, 3, 5, 4 in the survey.
+    if (order === "code_desc" || order === "code_asc") {
+      var csign = order === "code_asc" ? 1 : -1;
+      var isNum = function (r) { return !Number.isNaN(Number(r.response_code)); };
+      // Non-numeric codes go last either way -- a write-in's "code" is the
+      // verbatim answer, and mirroring the sort would open a descending table
+      // with a block of sentences.
+      var numeric = rows.filter(isNum).sort(function (a, b) {
+        return csign * (Number(a.response_code) - Number(b.response_code));
+      });
+      var other = rows.filter(function (r) { return !isNum(r); }).sort(function (a, b) {
+        return compareValues(a.response_code, b.response_code, false);
+      });
+      return numeric.concat(other);
     }
     if (order !== "survey_order" || !universe || !universe.length) { return rows; }
     var rank = {};
@@ -981,6 +1018,7 @@ function rrInit() {
       var o = document.createElement("option");
       o.value = opt[0];
       o.textContent = opt[1];
+      if (opt[2]) { o.disabled = true; }
       if (opt[0] === value) { o.selected = true; }
       select.appendChild(o);
     });
@@ -1329,9 +1367,9 @@ function rrInit() {
           else { out.values.hide_codes = v.map(String); }
           break;
         case "sort_by":
-          // All four orders are ones the browser can impose itself, so this drives
-          // the Row order control; a column-header sort still layers on top of it.
-          if (v === "count_asc" || v === "count_desc" || v === "survey_order" || v === "response_order") {
+          // Every order in the vocabulary is one the browser can impose itself,
+          // so this drives the Row order control and clears any header sort.
+          if (constants.row_orders.some(function (o) { return o[0] === v; })) {
             out.values.row_order = v;
             out.values.sort = null;
           } else if (v === "auto") {
@@ -1353,6 +1391,7 @@ function rrInit() {
     var changed = 0;
     Object.keys(values).forEach(function (k) {
       if (k === "sort") { state.sort = values[k]; changed++; return; }
+      if (k === "row_order") { state.sort = null; }
       state[k] = values[k];
       changed++;
     });
@@ -1500,12 +1539,14 @@ function rrInit() {
   // table's own controls and the report-level ones. Keeping them in a single
   // list is what stops the two sets from drifting apart as options are added.
   var MIXED = "\u0000mixed";
-  var ROW_ORDER_OPTS = [
-    ["survey_order", "Survey order"],
-    ["count_desc", "Count (high to low)"],
-    ["count_asc", "Count (low to high)"],
-    ["response_order", "Custom order"],
-  ];
+  // "Custom order" is the explicit response_order list from the config. It is
+  // offered only where there is such a list to apply, since picking it anywhere
+  // else would be a control that visibly does nothing.
+  function rowOrderOpts(hasCustom) {
+    return constants.row_orders.map(function (o) {
+      return o[0] === "response_order" && !hasCustom ? [o[0], o[1], true] : o;
+    });
+  }
   function optionSpecs(ctx) {
     var hasUniverse = !!(ctx.universe && ctx.universe.length);
     return [
@@ -1516,10 +1557,11 @@ function rrInit() {
         title: hasUniverse
           ? "Show a row for every code the survey defines, including the ones nobody chose."
           : "These answers are verbatim text, not a fixed set of codes, so there is nothing to fill in." },
-      { key: "row_order", kind: "select", label: "Row order", options: ROW_ORDER_OPTS,
-        title: "Survey order needs the question's defined codes; Custom order is the " +
-               "response_order the CSV was written with. Clicking a column header still " +
-               "sorts on top of this." },
+      { key: "row_order", kind: "select", label: "Row order",
+        options: rowOrderOpts(ctx.hasCustomOrder),
+        title: "Survey order is the order the choices appear in the survey, which is " +
+               "not the same as their code order. Custom order is the response_order " +
+               "list from the config. Setting this clears a column-header sort." },
       { key: "orientation", kind: "select", label: "Orientation", groupedOnly: true,
         options: [["columns", "Columns"], ["rows", "Rows"]] },
       { key: "overall", kind: "position", label: "Overall column/row", groupedOnly: true,
@@ -1576,7 +1618,11 @@ function rrInit() {
       state[sp.key] = v;
       // Switching orientation swaps which axis the rows are, so a sort key from
       // the previous orientation no longer addresses a real column.
-      if (sp.key === "orientation") { state.sort = null; }
+      // A column-header sort runs on top of the row order, so leaving one in
+      // place makes this control look broken -- you pick an order and the table
+      // does not move. Choosing an order here is the newer instruction, so it
+      // takes over.
+      if (sp.key === "orientation" || sp.key === "row_order") { state.sort = null; }
     }
     specs.forEach(function (sp) {
       els[sp.key] = buildOption(row, sp, state[sp.key], function (v) {
@@ -1673,7 +1719,8 @@ function rrInit() {
     var panel = buildPanel(toolsEl, "Modify this table");
     var row1 = document.createElement("div");
     row1.className = "rr-row";
-    var specs = optionSpecs({ grouped: false, universe: sdata.universe });
+    var specs = optionSpecs({ grouped: false, universe: sdata.universe,
+                              hasCustomOrder: state.row_order === "response_order" });
     var syncOpts = buildOptionRow(row1, specs, state, rerender);
     panel.appendChild(row1);
 
@@ -1789,7 +1836,8 @@ function rrInit() {
     var panel = buildPanel(toolsEl, "Modify this table");
     var row1 = document.createElement("div");
     row1.className = "rr-row";
-    var specs = optionSpecs({ grouped: true, universe: sdata.universe, hasOverall: hasOverall });
+    var specs = optionSpecs({ grouped: true, universe: sdata.universe, hasOverall: hasOverall,
+                              hasCustomOrder: state.row_order === "response_order" });
     var syncOpts = buildOptionRow(row1, specs, state, function () {
       rerender();
     });
@@ -1950,7 +1998,11 @@ function rrInit() {
     // least one table registered -- which is how orientation and the Overall
     // position stay out of a report with no crosstabs, and how a per-question
     // option like hide_codes never turns up here at all.
-    var gspecs = optionSpecs({ grouped: true, universe: [1], hasOverall: true })
+    var anyCustom = (globalSubs.row_order || []).some(function (sub) {
+      return sub.get() === "response_order";
+    });
+    var gspecs = optionSpecs({ grouped: true, universe: [1], hasOverall: true,
+                               hasCustomOrder: anyCustom })
       .filter(function (sp) { return (globalSubs[sp.key] || []).length; });
     var row = document.createElement("div");
     row.className = "rr-row";
@@ -2130,7 +2182,7 @@ def _render_question_section(
             "report_base": report_base,
             # Unfiltered, so the browser can re-apply or undo hide_codes itself.
             "rows": all_rows,
-            "codes": _code_choices(all_rows),
+            "codes": _code_choices(all_rows, universe),
             # Every code the question defines, so the browser can show the ones
             # nobody chose and offer survey order -- neither is derivable from
             # rows that only describe answers people gave.
@@ -2302,7 +2354,7 @@ def _render_grouped_section(
             # Unfiltered, so the browser can re-apply or undo hide_codes itself.
             "rows": all_rows,
             "overall_rows": all_overall_rows or None,
-            "codes": _code_choices(all_rows),
+            "codes": _code_choices(all_rows, universe),
             # Every code the question defines, so the browser can show the ones
             # nobody chose and offer survey order -- neither is derivable from
             # rows that only describe answers people gave.

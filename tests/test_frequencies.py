@@ -851,3 +851,41 @@ def test_manifest_carries_the_universe_and_the_resolved_sort_by(tmp_path) -> Non
     for opts in manifest["table_frequency_opts"].values():
         # Never "auto": the report has to know the order the rows are actually in.
         assert opts["sort_by"] in {"survey_order", "count_desc", "count_asc", "response_order"}
+
+
+# ---------------------------------------------------------------------------
+# code_asc / code_desc: the response code itself, not the survey's choice order
+# ---------------------------------------------------------------------------
+
+# Codes deliberately out of survey order, the way Qualtrics leaves them when a
+# designer moves a choice: the label order is 1, 3, 2 but the codes are 1, 2, 3.
+_MOVED_LABELS = {"1": "First", "3": "Third", "2": "Second"}
+_MOVED_ROWS = [{"Q": "1"}, {"Q": "2"}, {"Q": "2"}, {"Q": "3"}, {"Q": "3"}, {"Q": "3"}]
+
+
+def test_sort_survey_order_is_not_code_order() -> None:
+    assert _run_sort(_MOVED_ROWS, _MOVED_LABELS, "survey_order") == ["First", "Third", "Second"]
+
+
+def test_sort_code_asc() -> None:
+    assert _run_sort(_MOVED_ROWS, _MOVED_LABELS, "code_asc") == ["First", "Second", "Third"]
+
+
+def test_sort_code_desc() -> None:
+    assert _run_sort(_MOVED_ROWS, _MOVED_LABELS, "code_desc") == ["Third", "Second", "First"]
+
+
+def test_sort_code_order_keeps_verbatim_codes_last_in_both_directions() -> None:
+    # A write-in's "code" is the answer itself. Mirroring the sort would open a
+    # descending table with a block of sentences.
+    labels = {"1": "First", "2": "Second"}
+    rows = [{"Q": "1"}, {"Q": "2"}, {"Q": "a typed answer"}]
+    assert _run_sort(rows, labels, "code_asc") == ["First", "Second", "a typed answer"]
+    assert _run_sort(rows, labels, "code_desc") == ["Second", "First", "a typed answer"]
+
+
+def test_sort_code_order_is_numeric() -> None:
+    labels = {"2": "Two", "10": "Ten", "-1": "Other"}
+    rows = [{"Q": "2"}, {"Q": "10"}, {"Q": "-1"}]
+    # Not string order, which would put "10" between "-1" and "2".
+    assert _run_sort(rows, labels, "code_asc") == ["Other", "Two", "Ten"]
