@@ -217,8 +217,32 @@ and Total % are prevalence over people and do not change. On multi-select
 questions a respondent can pick several options, so that count isn't derivable
 from the table — there the row is hidden but Valid n is left alone.
 
-Open "Show config snippet" to see the exact JSON for your current state. Two
-kinds of key can appear:
+**Show/hide a table.** Each table's controls start with a "Show this table"
+checkbox (on by default). Unchecking it hides the table in the page and sets
+`include: false` for that question in the exported config.
+
+**Exporting the config.** "Show config for the whole report", at the top, holds
+the complete `qualtrics_frequency_config.json` for the report exactly as you have
+it arranged — every question, with a `tables` entry per breakout. Paste it over
+your config file to make the whole arrangement permanent.
+
+Each table also has its own "Show config snippet" with just that table's block.
+Both boxes show the **full** config, not only what you have changed, so an
+untouched table still gives you something complete to copy.
+
+The boxes work in both directions. Edit the JSON (or paste a config file into the
+report-wide box) and press **Apply**: the report rearranges to match — controls,
+tables and captions. Question-level keys apply to every table of that question, and
+each `tables` entry to the breakout whose `group_by` matches. Anything invalid is
+named rather than silently ignored: a JSON syntax error, an unknown key, a bad
+value (`orientation must be columns or rows`), or a question that isn't in this
+report. `sort_by: count_asc`/`count_desc` map onto the browser's own sort;
+`response_order` is reported as needing the frequencies stage.
+
+Once you type in a box it stops following the controls, so a stray toggle can't
+discard your edit; **Regenerate** brings the generated text back.
+
+Two kinds of key appear:
 
 - **Presentation keys** (`show_code`, `stats`, `orientation`, `overall`,
   `response_total`, `pct_decimals`, `hide_codes`) go in that question's block, or
