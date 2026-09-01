@@ -228,10 +228,19 @@ your config file to make the whole arrangement permanent.
 
 Each table also has its own "Show config snippet" with just that table's block.
 Both boxes show the **full** config, not only what you have changed, so an
-untouched table still gives you something complete to copy. They are editable —
-adjust the JSON before copying if you want; once you type in a box it stops
-following the controls (so a stray toggle can't discard your edit) until you press
-Regenerate.
+untouched table still gives you something complete to copy.
+
+The boxes work in both directions. Edit the JSON (or paste a config file into the
+report-wide box) and press **Apply**: the report rearranges to match — controls,
+tables and captions. Question-level keys apply to every table of that question, and
+each `tables` entry to the breakout whose `group_by` matches. Anything invalid is
+named rather than silently ignored: a JSON syntax error, an unknown key, a bad
+value (`orientation must be columns or rows`), or a question that isn't in this
+report. `sort_by: count_asc`/`count_desc` map onto the browser's own sort;
+`response_order` is reported as needing the frequencies stage.
+
+Once you type in a box it stops following the controls, so a stray toggle can't
+discard your edit; **Regenerate** brings the generated text back.
 
 Two kinds of key appear:
 

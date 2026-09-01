@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .frequencies import PCT_DECIMALS_MAX, STAT_KEYS
+
 # Columns carried per question (constant across its rows) vs. per response row.
 _QUESTION_LEVEL = ("question_key", "question_id", "question_text", "question_type")
 
@@ -201,7 +203,12 @@ def _constants_blob() -> str:
         "stat_order": _STAT_ORDER,
         "alias_stats": sorted(_STAT_CHIP_LABEL),
         "report_bases": _REPORT_BASES,
-        "pct_decimals_max": 6,
+        "pct_decimals_max": PCT_DECIMALS_MAX,
+        # Accepted values, so the browser validates a pasted config against the
+        # same vocabulary the config validator uses.
+        "stat_keys": sorted(STAT_KEYS),
+        "orientations": ["columns", "rows"],
+        "positions": [False, "before", "after"],
         "pct_field": _PCT_FIELD,
         "n_field": _N_FIELD,
         "default_flat_stats": _DEFAULT_FLAT_STATS,
@@ -303,6 +310,7 @@ table.writein th { background: #eef1f4; }
 .rr-snippet-hint { font-size: 0.78rem; color: #555; margin-bottom: 0.3rem; }
 .rr-copy-btn { font-size: 0.8rem; padding: 0.15rem 0.6rem; cursor: pointer; }
 .rr-copy-btn:disabled { cursor: not-allowed; opacity: 0.6; }
+.rr-note.rr-bad { color: #b3261e; }
 .rr-chip-group { display: flex; align-items: center; gap: 0.15rem 0.7rem; flex-wrap: wrap; }
 .rr-chip-group + .rr-chip-group { border-left: 1px solid #d0d7de; padding-left: 0.7rem; }
 .rr-chip-group > .rr-group-name { color: #666; font-size: 0.78rem; text-transform: uppercase;
@@ -865,6 +873,9 @@ function rrInit() {
     chipsRow.appendChild(concreteGroup);
     chipsRow.appendChild(aliasGroup);
     container.appendChild(chipsRow);
+    return function (stats) {
+      boxes.forEach(function (b) { b.input.checked = stats.indexOf(b.stat) !== -1; });
+    };
   }
 
   function addNumber(row, labelText, value, min, max, onChange) {
@@ -890,6 +901,7 @@ function rrInit() {
   // exports, so which code means N/A is a per-survey judgement, not a constant.
   function addHidePicker(container, codes, selected, onChange) {
     if (!codes || !codes.length) { return function () {}; }
+    var inputsByCode = {};
     var details = document.createElement("details");
     details.className = "rr-hide";
     var summary = document.createElement("summary");
@@ -919,6 +931,7 @@ function rrInit() {
         onChange(current());
       });
       label.appendChild(input);
+      inputsByCode[c.code] = input;
       // A write-in's "code" is the verbatim text, so code and label are the same
       // string -- printing both would just repeat a sentence. The span is width
       // capped in CSS and carries the full text as its tooltip.
@@ -931,7 +944,12 @@ function rrInit() {
       body.appendChild(label);
     });
     syncSummary();
-    return syncSummary;
+    return function (hide) {
+      chosen = {};
+      (hide || []).forEach(function (c) { chosen[String(c)] = true; });
+      Object.keys(inputsByCode).forEach(function (c) { inputsByCode[c].checked = !!chosen[c]; });
+      syncSummary();
+    };
   }
 
   // Twin of Python's _base_caption: with one percentage column this is the only
@@ -1071,7 +1089,88 @@ function rrInit() {
     if (!codes.length) { return { keys: {}, note: "" }; }
     return { keys: { sort_by: "response_order", response_order: codes }, note: "" };
   }
-  function snippetPart(parent, hintText) {
+  // ---- reading a config back in ----
+  // Validates a pasted block against the same vocabulary the config validator
+  // uses, so a typo is reported rather than silently ignored. Returns the values
+  // that can be applied plus what was rejected and why.
+  var TABLE_KEYS = ["show_code", "orientation", "overall", "response_total",
+                    "stats", "pct_decimals", "hide_codes"];
+  var QUESTION_KEYS = ["include", "percent_base", "sort_by", "response_order"];
+  function inList(v, list) { return list.indexOf(v) !== -1; }
+  function readConfig(obj, kind) {
+    var out = { values: {}, errors: [], ignored: [] };
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+      out.errors.push("expected a JSON object");
+      return out;
+    }
+    Object.keys(obj).forEach(function (key) {
+      var v = obj[key];
+      if (key.charAt(0) === "_" || key === "group_by" || key === "tables") { return; }
+      switch (key) {
+        case "show_code":
+        case "include":
+          if (typeof v !== "boolean") { out.errors.push(key + " must be true or false"); }
+          else { out.values[key] = v; }
+          break;
+        case "orientation":
+          if (!inList(v, constants.orientations)) { out.errors.push("orientation must be columns or rows"); }
+          else { out.values.orientation = v; }
+          break;
+        case "overall":
+        case "response_total":
+          if (!inList(v, constants.positions)) { out.errors.push(key + " must be false, \\"before\\" or \\"after\\""); }
+          else { out.values[key] = v; }
+          break;
+        case "percent_base":
+          if (!inList(v, constants.report_bases)) { out.errors.push("percent_base must be one of " + constants.report_bases.join(", ")); }
+          else { out.values.percent_base = v; }
+          break;
+        case "pct_decimals":
+          if (typeof v !== "number" || v % 1 !== 0 || v < 0 || v > constants.pct_decimals_max) {
+            out.errors.push("pct_decimals must be a whole number 0-" + constants.pct_decimals_max);
+          } else { out.values.pct_decimals = v; }
+          break;
+        case "stats":
+          if (!Array.isArray(v)) { out.errors.push("stats must be a list"); break; }
+          var bad = v.filter(function (x) { return !inList(x, constants.stat_keys); });
+          if (bad.length) { out.errors.push("unknown stats: " + bad.join(", ")); }
+          else if (!v.length) { out.errors.push("stats must name at least one statistic"); }
+          else { out.values.stats = v.slice(); }
+          break;
+        case "hide_codes":
+          if (!Array.isArray(v)) { out.errors.push("hide_codes must be a list"); }
+          else { out.values.hide_codes = v.map(String); }
+          break;
+        case "sort_by":
+          // count_asc/count_desc are exactly the browser's own n-column sort.
+          if (v === "count_asc" || v === "count_desc") {
+            out.values.sort = { key: { kind: "stat", stat: "n" }, dir: v === "count_asc" ? "asc" : "desc" };
+          } else if (v === "survey_order" || v === "response_order" || v === "auto") {
+            out.values.sort = null;  // the CSV is already in the configured order
+            out.ignored.push(key + ": \\"" + v + "\\" is applied when the CSV is written");
+          } else { out.errors.push("unknown sort_by: " + v); }
+          break;
+        case "response_order":
+          out.ignored.push("response_order is applied when the CSV is written");
+          break;
+        default:
+          out.ignored.push("unknown key: " + key);
+      }
+    });
+    if (kind !== "grouped") { delete out.values.orientation; delete out.values.overall; }
+    return out;
+  }
+  function applyConfig(state, values) {
+    var changed = 0;
+    Object.keys(values).forEach(function (k) {
+      if (k === "sort") { state.sort = values[k]; changed++; return; }
+      state[k] = values[k];
+      changed++;
+    });
+    return changed;
+  }
+
+  function snippetPart(parent, hintText, onApply) {
     var wrap = document.createElement("div");
     wrap.className = "rr-snippet-part";
     var hint = document.createElement("div");
@@ -1088,6 +1187,16 @@ function rrInit() {
     copyBtn.className = "rr-copy-btn";
     copyBtn.textContent = "Copy";
     wrap.appendChild(copyBtn);
+    var applyBtn = null;
+    if (onApply) {
+      applyBtn = document.createElement("button");
+      applyBtn.type = "button";
+      applyBtn.className = "rr-copy-btn";
+      applyBtn.textContent = "Apply";
+      applyBtn.style.marginLeft = "0.4rem";
+      applyBtn.title = "Read this JSON back and update the report to match";
+      wrap.appendChild(applyBtn);
+    }
     var resetBtn = document.createElement("button");
     resetBtn.type = "button";
     resetBtn.className = "rr-copy-btn";
@@ -1118,6 +1227,27 @@ function rrInit() {
       note.textContent = "";
     });
 
+    if (applyBtn) {
+      applyBtn.addEventListener("click", function () {
+        var parsed;
+        try {
+          parsed = JSON.parse(textarea.value);
+        } catch (e) {
+          note.className = "rr-note rr-bad";
+          note.textContent = "Not valid JSON: " + e.message;
+          return;
+        }
+        var report = onApply(parsed);
+        note.className = report.errors.length ? "rr-note rr-bad" : "rr-note";
+        var parts = [];
+        if (report.applied) { parts.push("Applied " + report.applied + " setting" + (report.applied === 1 ? "" : "s") + "."); }
+        else if (!report.errors.length) { parts.push("Nothing to change."); }
+        if (report.errors.length) { parts.push(report.errors.join("; ")); }
+        if (report.ignored.length) { parts.push("Not applied here \\u2014 " + report.ignored.join("; ")); }
+        note.textContent = parts.join(" ");
+      });
+    }
+
     copyBtn.addEventListener("click", function () {
       var text = textarea.value;
       function fallback() {
@@ -1138,12 +1268,12 @@ function rrInit() {
       var empty = !obj || Object.keys(obj).length === 0;
       wrap.style.display = empty ? "none" : "";
       latest = empty ? "" : JSON.stringify(obj, null, 2);
-      if (!dirty) { textarea.value = latest; }
+      if (!dirty) { textarea.value = latest; note.className = "rr-note"; }
       copyBtn.disabled = empty && !dirty;
       return !empty;
     };
   }
-  function buildSnippetPanel(container, kind, questionId, groupBy, getEdited, getSort, getAxis) {
+  function buildSnippetPanel(container, kind, questionId, groupBy, getEdited, getSort, getAxis, apply) {
     var details = document.createElement("details");
     details.className = "rr-snippet";
     var summary = document.createElement("summary");
@@ -1158,8 +1288,10 @@ function rrInit() {
     var qHint = "Question-level keys for \\"" + questionId + "\\" (not the \\"tables\\" entry). " +
       "Applied when frequency tables are generated \\u2014 re-run the frequencies stage for these.";
 
-    var setPres = snippetPart(details, presHint);
-    var setQuestion = snippetPart(details, qHint);
+    // Applying reads the block back in: edits here drive the table, not just
+    // the clipboard.
+    var setPres = snippetPart(details, presHint, function (obj) { return apply(obj, kind); });
+    var setQuestion = snippetPart(details, qHint, function (obj) { return apply(obj, "question"); });
     var note = document.createElement("div");
     note.className = "rr-snippet-hint";
     details.appendChild(note);
@@ -1226,23 +1358,43 @@ function rrInit() {
 
     var row1 = document.createElement("div");
     row1.className = "rr-row";
-    addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
-    addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
-    addSelect(row1, "Total row", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
-    addSelect(row1, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
-    addNumber(row1, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
+    var incBox = addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
+    var codeBox = addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
+    var totalSel = addSelect(row1, "Total row", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
+    var baseSel = addSelect(row1, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
+    var decInput = addNumber(row1, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
       function (v) { state.pct_decimals = v; syncDecimals(v); rerender(); });
     toolsEl.appendChild(row1);
 
     var row2 = document.createElement("div");
     row2.className = "rr-row";
-    addStatChips(row2, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); });
+    var syncChips = addStatChips(row2, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); });
     toolsEl.appendChild(row2);
-    addHidePicker(toolsEl, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
+    var syncHide = addHidePicker(toolsEl, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
+
+    // A config read back in has to move the controls too, or they would
+    // misreport the table they are supposed to be driving.
+    function syncControls() {
+      incBox.checked = state.include;
+      codeBox.checked = state.show_code;
+      totalSel.value = state.response_total || "";
+      baseSel.value = state.percent_base;
+      decInput.value = String(state.pct_decimals);
+      syncChips(state.stats);
+      syncHide(state.hide_codes);
+      syncBase(state.percent_base);
+      syncDecimals(state.pct_decimals);
+    }
 
     var refreshDefs = buildDefsPanel(toolsEl, function () { return state.percent_base; }, "flat",
       function () { return state.stats; });
     function flatState() { return state; }
+    function applyToSection(obj, kind) {
+      var r = readConfig(obj, kind === "question" ? "flat" : kind);
+      var applied = applyConfig(state, r.values);
+      if (applied) { syncControls(); rerender(); }
+      return { applied: applied, errors: r.errors, ignored: r.ignored };
+    }
     var refreshSnippet = buildSnippetPanel(toolsEl, "flat", sdata.question_id, [],
       flatState,
       function () { return state.sort; },
@@ -1256,9 +1408,10 @@ function rrInit() {
             }).map(function (row) { return row.response_code || ""; });
           },
         };
-      });
+      }, applyToSection);
     registerSection({
       qkey: sdata.question_key, kind: "flat", groupBy: [],
+      apply: applyToSection,
       state: flatState, sort: function () { return state.sort; },
       axis: function () {
         return { sortsResponses: true, hasAttr: hasAttr, codes: function () {
@@ -1324,9 +1477,9 @@ function rrInit() {
 
     var row1 = document.createElement("div");
     row1.className = "rr-row";
-    addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
-    addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
-    addSelect(row1, "Orientation", state.orientation, [["columns", "Columns"], ["rows", "Rows"]], function (v) {
+    var incBox = addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
+    var codeBox = addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
+    var orientSel = addSelect(row1, "Orientation", state.orientation, [["columns", "Columns"], ["rows", "Rows"]], function (v) {
       state.orientation = v;
       state.sort = null; // the old sort key addressed the other axis's columns
       rerender();
@@ -1340,22 +1493,44 @@ function rrInit() {
       overallSelect.disabled = true;
       overallSelect.title = "No ungrouped table was generated for this question, so there is no Overall data to show.";
     }
-    addSelect(row2, "Response total", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
-    addSelect(row2, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
-    addNumber(row2, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
+    var totalSel = addSelect(row2, "Response total", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
+    var baseSel = addSelect(row2, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
+    var decInput = addNumber(row2, "% decimals", state.pct_decimals, 0, constants.pct_decimals_max,
       function (v) { state.pct_decimals = v; syncDecimals(v); rerender(); });
     toolsEl.appendChild(row2);
 
     var row3 = document.createElement("div");
     row3.className = "rr-row";
-    addStatChips(row3, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); });
+    var syncChips = addStatChips(row3, constants.stat_order, state.stats, state.percent_base, function (stats) { state.stats = stats; rerender(); });
     toolsEl.appendChild(row3);
-    addHidePicker(toolsEl, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
+    var syncHide = addHidePicker(toolsEl, sdata.codes, state.hide_codes, function (codes) { state.hide_codes = codes; rerender(); });
+
+    // A config read back in has to move the controls too, or they would
+    // misreport the table they are supposed to be driving.
+    function syncControls() {
+      incBox.checked = state.include;
+      codeBox.checked = state.show_code;
+      orientSel.value = state.orientation;
+      overallSelect.value = state.overall || "";
+      totalSel.value = state.response_total || "";
+      baseSel.value = state.percent_base;
+      decInput.value = String(state.pct_decimals);
+      syncChips(state.stats);
+      syncHide(state.hide_codes);
+      syncBase(state.percent_base);
+      syncDecimals(state.pct_decimals);
+    }
 
     var refreshDefs = buildDefsPanel(toolsEl, function () { return state.percent_base; }, "grouped",
       function () { return state.stats; });
     var groupByList = sdata.group_by || [];
     function groupedState() { return state; }
+    function applyToSection(obj, kind) {
+      var r = readConfig(obj, kind === "question" ? "grouped" : kind);
+      var applied = applyConfig(state, r.values);
+      if (applied) { syncControls(); rerender(); }
+      return { applied: applied, errors: r.errors, ignored: r.ignored };
+    }
     var refreshSnippet = buildSnippetPanel(toolsEl, "grouped", sdata.question_id, groupByList,
       groupedState,
       function () { return state.sort; },
@@ -1377,7 +1552,7 @@ function rrInit() {
               .map(function (opt) { return opt.code || ""; });
           },
         };
-      });
+      }, applyToSection);
     function groupedAxis() {
       return {
         sortsResponses: state.orientation !== "rows",
@@ -1388,6 +1563,7 @@ function rrInit() {
     registerSection({
       qkey: sdata.question_key, kind: "grouped", groupBy: groupByList,
       state: groupedState, sort: function () { return state.sort; }, axis: groupedAxis,
+      apply: applyToSection,
     });
     rerender(); // re-render once so the headers become sort controls
   }
@@ -1402,6 +1578,50 @@ function rrInit() {
   // ungrouped table, and a "tables" entry per breakout. A question with only an
   // ungrouped table keeps its keys at question level, where they already apply,
   // rather than carrying a redundant {"group_by": []} spec.
+  // Distribute a whole config file across the sections: question-level keys go
+  // to every table of that question, and each "tables" entry to the breakout
+  // whose group_by matches ({"group_by": []} being the ungrouped one).
+  function applyReportConfig(obj) {
+    var errors = [], ignored = [], applied = 0;
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+      return { applied: 0, errors: ["expected a JSON object"], ignored: [] };
+    }
+    var questions = obj.questions;
+    if (!questions || typeof questions !== "object") {
+      return { applied: 0, errors: ['expected a "questions" object'], ignored: [] };
+    }
+    var byKey = {};
+    configSections.forEach(function (sec) {
+      (byKey[sec.qkey] = byKey[sec.qkey] || []).push(sec);
+    });
+    Object.keys(questions).forEach(function (qkey) {
+      var secs = byKey[qkey];
+      if (!secs) { ignored.push(qkey + " is not in this report"); return; }
+      var block = questions[qkey] || {};
+      secs.forEach(function (sec) {
+        var r = sec.apply(block, sec.kind);
+        applied += r.applied;
+        r.errors.forEach(function (e) { errors.push(qkey + ": " + e); });
+      });
+      var specs = Array.isArray(block.tables) ? block.tables : [];
+      specs.forEach(function (spec) {
+        var gb = (spec && Array.isArray(spec.group_by)) ? spec.group_by : [];
+        var target = secs.filter(function (sec) {
+          return sec.groupBy.length === gb.length &&
+            sec.groupBy.every(function (g, i) { return g === gb[i]; });
+        })[0];
+        if (!target) {
+          ignored.push(qkey + ": no table with group_by [" + gb.join(", ") + "]");
+          return;
+        }
+        var r2 = target.apply(spec, target.kind);
+        applied += r2.applied;
+        r2.errors.forEach(function (e) { errors.push(qkey + ": " + e); });
+      });
+    });
+    return { applied: applied, errors: errors, ignored: ignored };
+  }
+
   function buildReportConfig() {
     var questions = {};
     var order = [];
@@ -1471,9 +1691,11 @@ function rrInit() {
     full.appendChild(fullSummary);
     globalHost.appendChild(full);
     var setFull = snippetPart(full,
-      "Every question as currently shown \\u2014 paste over qualtrics_frequency_config.json. " +
+      "Every question as currently shown \\u2014 paste over qualtrics_frequency_config.json, " +
+      "or paste a config in and press Apply to rearrange the report to match. " +
       "include, percent_base, sort_by and response_order are applied by the frequencies " +
-      "stage, so re-run it for those; the rest apply on the next report render.");
+      "stage, so re-run it for those; the rest apply on the next report render.",
+      applyReportConfig);
     refreshFullConfig = function () { setFull(buildReportConfig()); };
     refreshFullConfig();
   }

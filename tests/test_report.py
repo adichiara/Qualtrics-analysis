@@ -522,3 +522,26 @@ def test_report_exposes_a_host_for_the_whole_report_config(tmp_path) -> None:
     assert "function buildReportConfig" in html
     assert "function tableConfig" in html
     assert "function questionConfig" in html
+
+
+def test_config_vocabulary_published_for_the_browser(tmp_path) -> None:
+    """Applying a pasted config means validating it in the browser, so the
+    accepted values ship with the page rather than being duplicated as JS
+    literals that could drift from the config validator."""
+    from qualtrics_pipeline.frequencies import PCT_DECIMALS_MAX, STAT_KEYS
+
+    html = generate_html_report(_flat_run(tmp_path)).read_text()
+    blob = html.split('id="rr-constants"')[1].split("</script>")[0]
+    for key in ('"stat_keys"', '"orientations"', '"positions"', '"report_bases"'):
+        assert key in blob
+    for stat in STAT_KEYS:
+        assert f'"{stat}"' in blob
+    assert f'"pct_decimals_max": {PCT_DECIMALS_MAX}' in blob
+
+
+def test_report_can_read_a_config_back_in(tmp_path) -> None:
+    html = generate_html_report(_flat_run(tmp_path)).read_text()
+    # validation, application, and the whole-file distribution all ship
+    assert "function readConfig" in html
+    assert "function applyConfig" in html
+    assert "function applyReportConfig" in html
