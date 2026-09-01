@@ -2,6 +2,8 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+
 from qualtrics_pipeline.report import _natural_question_key, generate_html_report
 
 
@@ -603,3 +605,86 @@ def test_include_empty_codes_is_a_question_level_config_key() -> None:
     assert '"include_empty_codes"];' in script
     table_keys = script.split('var TABLE_KEYS = ')[1].split("];")[0]
     assert "include_empty_codes" not in table_keys
+
+
+# ---------------------------------------------------------------------------
+# Browser-side controls: what they cover and that the script actually parses
+# ---------------------------------------------------------------------------
+
+def test_hide_picker_choices_are_ordered_by_code() -> None:
+    from qualtrics_pipeline.report import _code_choices
+
+    rows = [
+        {"response_code": "10", "response_label": "Ten"},
+        {"response_code": "2", "response_label": "Two"},
+        {"response_code": "-1", "response_label": "Other"},
+        {"response_code": "typed answer", "response_label": "typed answer"},
+        {"response_code": "9", "response_label": "Nine"},
+    ]
+    # Numeric where the codes are numeric, so 10 follows 9 rather than 1;
+    # verbatim write-in "codes" sort after the coded ones.
+    assert [c["code"] for c in _code_choices(rows)] == ["-1", "2", "9", "10", "typed answer"]
+
+
+def test_universe_reaches_the_data_blob(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", [_base_row()])
+    universe = [{"column": "Q1.5", "attribute": "", "multi_select": False,
+                 "codes": [["1", "Schofield"], ["2", "Fort Bragg"]]}]
+    (run_dir / "frequency_manifest.json").write_text(
+        json.dumps({"data_path": "x.csv", "table_code_universe": {"QID2": universe}}),
+        encoding="utf-8",
+    )
+    html = generate_html_report(run_dir).read_text()
+    assert _blob(html, "QID2")["universe"] == universe
+
+
+def test_resolved_sort_by_reaches_the_data_blob(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", [_base_row()])
+    (run_dir / "frequency_manifest.json").write_text(
+        json.dumps({"data_path": "x.csv",
+                    "table_frequency_opts": {"QID2": {"sort_by": "survey_order"}}}),
+        encoding="utf-8",
+    )
+    html = generate_html_report(run_dir).read_text()
+    assert _blob(html, "QID2")["presentation"]["sort_by"] == "survey_order"
+
+
+def test_every_browser_drivable_config_key_has_a_control() -> None:
+    """The control bar must not quietly fall behind the config vocabulary."""
+    from qualtrics_pipeline.config_validate import KNOWN_QUESTION_KEYS
+    from qualtrics_pipeline.report import _SCRIPT
+
+    specs = _SCRIPT.split("function optionSpecs(")[1].split("\n  }")[0]
+    keyed = {line.split('key: "')[1].split('"')[0] for line in specs.splitlines() if 'key: "' in line}
+    # stats has its own chip widget and hide_codes its own picker, so neither is
+    # a row spec; row_order is the control name for sort_by/response_order.
+    covered = keyed | {"stats", "hide_codes", "sort_by", "response_order"}
+    # Keys the browser cannot act on: text_reporting_mode is per column and
+    # "tables"/"group_by" build a table that does not exist yet, both of which
+    # need the frequencies stage to run before there is anything to show.
+    not_offered = {"tables", "text_entry_columns", "frequency_mode"}
+    assert KNOWN_QUESTION_KEYS - covered == not_offered
+
+
+def test_report_script_is_syntactically_valid_javascript() -> None:
+    """A mangled escape in the embedded JS breaks every control at once.
+
+    Nothing else in the suite would notice: the HTML still renders, the tables
+    still show, and only the browser console says the script never ran.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available to parse the embedded script")
+    from qualtrics_pipeline.report import _SCRIPT
+
+    proc = subprocess.run([node, "--check", "-"], input=_SCRIPT, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
