@@ -765,7 +765,10 @@ def test_include_empty_codes_leaves_write_in_columns_alone() -> None:
 def test_include_empty_codes_is_stamped_into_the_manifest() -> None:
     rows = [{"Q": "1"}]
     _, meta = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS)], include_empty_codes=True)
-    assert meta["table_specs"]["QSORT"]["frequency"] == {"include_empty_codes": True}
+    # sort_by is stamped resolved, so the report knows what order the rows are in.
+    assert meta["table_specs"]["QSORT"]["frequency"] == {
+        "include_empty_codes": True, "sort_by": "count_desc",
+    }
 
 
 def test_include_empty_codes_applies_within_each_group() -> None:
@@ -801,3 +804,50 @@ def test_include_empty_codes_skips_text_columns_without_the_suffix_flag() -> Non
     tables, _ = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS), text_col], include_empty_codes=True)
     text_rows = [r for r in tables["QSORT"] if r["column"] == "Q_21_TEXT"]
     assert [r["response_code"] for r in text_rows] == ["handwritten"]
+
+
+# ---------------------------------------------------------------------------
+# The code universe the report needs to fill in zero-response rows itself
+# ---------------------------------------------------------------------------
+
+def test_code_universe_lists_every_defined_code_in_survey_order() -> None:
+    _, meta = _empty_codes_run([{"Q": "1"}], [_mc_col("Q", _SORT_LABELS)])
+    assert meta["table_specs"]["QSORT"]["code_universe"] == [
+        {"column": "Q", "attribute": "", "multi_select": False,
+         "codes": [["1", "A"], ["2", "B"], ["3", "C"]]},
+    ]
+
+
+def test_code_universe_reduces_a_multi_select_to_its_selected_marker() -> None:
+    _, meta = _empty_codes_run(
+        [{"Q_1": "1"}], [_multi_col("Q_1", "Boots")], qkey="QMULTI"
+    )
+    universe = meta["table_specs"]["QMULTI"]["code_universe"]
+    assert universe == [
+        {"column": "Q_1", "attribute": "Boots", "multi_select": True,
+         "codes": [["1", "Selected"]]},
+    ]
+
+
+def test_code_universe_omits_write_in_columns() -> None:
+    text_col = _mc_col("Q_21_TEXT", _SORT_LABELS)
+    _, meta = _empty_codes_run(
+        [{"Q": "1", "Q_21_TEXT": "typed"}], [_mc_col("Q", _SORT_LABELS), text_col]
+    )
+    assert [u["column"] for u in meta["table_specs"]["QSORT"]["code_universe"]] == ["Q"]
+
+
+def test_manifest_carries_the_universe_and_the_resolved_sort_by(tmp_path) -> None:
+    fixture = Path("tests/fixtures/real_run")
+    column_map = json.loads((fixture / "column_map.json").read_text(encoding="utf-8"))
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(build_default_config(column_map)), encoding="utf-8")
+    outdir = tmp_path / "out"
+    run_frequency_analysis(
+        fixture / "responses_clean.csv", fixture / "column_map.json", outdir, config_path
+    )
+    manifest = json.loads((outdir / "frequency_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["table_code_universe"], "no question published its defined codes"
+    for opts in manifest["table_frequency_opts"].values():
+        # Never "auto": the report has to know the order the rows are actually in.
+        assert opts["sort_by"] in {"survey_order", "count_desc", "count_asc", "response_order"}
