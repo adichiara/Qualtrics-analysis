@@ -673,3 +673,131 @@ def test_rerun_with_narrower_only_clears_stale_output_files(tmp_path) -> None:
 
     html = generate_html_report(outdir).read_text(encoding="utf-8")
     assert html.count("<section") == 1  # only QIDA's section, no stale QIDB
+
+
+# ---------------------------------------------------------------------------
+# include_empty_codes: rows for defined-but-unchosen response codes
+# ---------------------------------------------------------------------------
+
+def _multi_col(col: str, sub: str) -> dict:
+    """Column-map entry for one option of a select-all question."""
+    return {
+        "survey_id": "SV_1", "qid": "QMULTI", "data_export_tag": "QMULTI",
+        "column": col, "question_type": "MC", "selector": "MAVR",
+        "question_text": "Pick any", "sub_question_text": sub,
+        "response_labels": {"0": "Not selected", "1": "Selected"},
+        "is_open_text": False, "is_metadata": False, "is_sensitive": False,
+        "is_text_entry_suffix": False, "parent_question_key": "QMULTI",
+        "parent_choice_code": "", "parent_choice_label": "",
+        "text_reporting_mode": "skip",
+    }
+
+
+def _empty_codes_run(rows, column_map, qkey="QSORT", **cfg):
+    config = {
+        "defaults": {},
+        "questions": {qkey: {"include": True, "response_order": [], "text_entry_columns": {}, **cfg}},
+    }
+    tables, _, meta = generate_frequency_tables(rows, column_map, config)
+    return tables, meta
+
+
+def test_include_empty_codes_off_by_default() -> None:
+    rows = [{"Q": "1"}, {"Q": "1"}]
+    tables, _ = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS)])
+    assert [r["response_code"] for r in tables["QSORT"]] == ["1"]
+
+
+def test_include_empty_codes_fills_unchosen_codes_with_zero() -> None:
+    rows = [{"Q": "1"}, {"Q": "1"}, {"Q": "3"}]
+    tables, _ = _empty_codes_run(
+        rows, [_mc_col("Q", _SORT_LABELS)], include_empty_codes=True, sort_by="survey_order"
+    )
+    got = [(r["response_code"], r["n"]) for r in tables["QSORT"]]
+    assert got == [("1", 2), ("2", 0), ("3", 1)]
+
+
+def test_include_empty_codes_zero_rows_do_not_move_the_bases() -> None:
+    # Valid/eligible/total n are respondent counts; a filled-in code adds no one.
+    rows = [{"Q": "1"}, {"Q": "1"}, {"Q": ""}]
+    tables, _ = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS)], include_empty_codes=True)
+    by_code = {r["response_code"]: r for r in tables["QSORT"]}
+    assert by_code["2"]["n"] == 0
+    for row in tables["QSORT"]:
+        assert row["valid_n"] == 2
+        assert row["total_n"] == 3
+    assert by_code["2"]["valid_pct"] == 0.0
+    assert by_code["1"]["valid_pct"] == 100.0
+
+
+def test_include_empty_codes_orders_zero_rows_last_under_count_desc() -> None:
+    rows = [{"Q": "3"}, {"Q": "3"}, {"Q": "1"}]
+    tables, _ = _empty_codes_run(
+        rows, [_mc_col("Q", _SORT_LABELS)], include_empty_codes=True, sort_by="count_desc"
+    )
+    assert [r["response_code"] for r in tables["QSORT"]] == ["3", "1", "2"]
+
+
+def test_include_empty_codes_keeps_an_unselected_multi_select_option() -> None:
+    # Option 2 was offered but nobody picked it; today its column vanishes entirely.
+    cmap = [_multi_col("Q_1", "Boots"), _multi_col("Q_2", "Gloves")]
+    rows = [{"Q_1": "1", "Q_2": ""}, {"Q_1": "1", "Q_2": ""}]
+    tables, _ = _empty_codes_run(rows, cmap, qkey="QMULTI")
+    assert [r["attribute"] for r in tables["QMULTI"]] == ["Boots"]
+
+    tables, _ = _empty_codes_run(rows, cmap, qkey="QMULTI", include_empty_codes=True)
+    got = [(r["attribute"], r["response_code"], r["n"], r["valid_n"]) for r in tables["QMULTI"]]
+    # "Not selected" is not a choice anybody could make, so it never becomes a row.
+    assert got == [("Boots", "1", 2, 2), ("Gloves", "1", 0, 2)]
+
+
+def test_include_empty_codes_leaves_write_in_columns_alone() -> None:
+    text_col = _multi_col("Q_2_TEXT", "Other")
+    text_col["is_text_entry_suffix"] = True
+    text_col["text_reporting_mode"] = "frequency_text"
+    cmap = [_multi_col("Q_1", "Boots"), text_col]
+    rows = [{"Q_1": "1", "Q_2_TEXT": ""}]
+    tables, _ = _empty_codes_run(rows, cmap, qkey="QMULTI", include_empty_codes=True)
+    # A verbatim column has no defined code set; "Selected" would be nonsense there.
+    assert [r["column"] for r in tables["QMULTI"]] == ["Q_1"]
+
+
+def test_include_empty_codes_is_stamped_into_the_manifest() -> None:
+    rows = [{"Q": "1"}]
+    _, meta = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS)], include_empty_codes=True)
+    assert meta["table_specs"]["QSORT"]["frequency"] == {"include_empty_codes": True}
+
+
+def test_include_empty_codes_applies_within_each_group() -> None:
+    group_col = _mc_col("G", {"1": "North", "2": "South"})
+    group_col.update({"qid": "QGRP", "data_export_tag": "QGRP", "parent_question_key": "QGRP"})
+    cmap = [_mc_col("Q", _SORT_LABELS), group_col]
+    rows = [{"Q": "1", "G": "1"}, {"Q": "2", "G": "2"}]
+    config = {
+        "defaults": {},
+        "questions": {
+            "QSORT": {
+                "include": True, "response_order": [], "text_entry_columns": {},
+                "include_empty_codes": True, "sort_by": "survey_order",
+                "tables": [{"group_by": ["G"]}],
+            },
+            "QGRP": {"include": False},
+        },
+    }
+    tables, _, _ = generate_frequency_tables(rows, cmap, config)
+    grouped = tables["QSORT__by__G"]
+    got = [(r["group_labels"], r["response_code"], r["n"]) for r in grouped]
+    assert got == [
+        ("North", "1", 1), ("North", "2", 0), ("North", "3", 0),
+        ("South", "1", 0), ("South", "2", 1), ("South", "3", 0),
+    ]
+
+
+def test_include_empty_codes_skips_text_columns_without_the_suffix_flag() -> None:
+    # Older column maps carry no is_text_entry_suffix flag, leaving a write-in
+    # column looking exactly like its parent -- including its response_labels.
+    text_col = _mc_col("Q_21_TEXT", _SORT_LABELS)
+    rows = [{"Q": "1", "Q_21_TEXT": "handwritten"}]
+    tables, _ = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS), text_col], include_empty_codes=True)
+    text_rows = [r for r in tables["QSORT"] if r["column"] == "Q_21_TEXT"]
+    assert [r["response_code"] for r in text_rows] == ["handwritten"]
