@@ -351,6 +351,11 @@ function rrInit() {
   // single table is changed on its own.
   var decimalsSubscribers = [];
   function registerDecimals(setter, getter) { decimalsSubscribers.push({ set: setter, get: getter }); }
+  // Every section registers what it contributes to the report-wide config.
+  var configSections = [];
+  function registerSection(entry) { configSections.push(entry); }
+  var refreshFullConfig = function () {};
+
   var baseSubscribers = [];
   function registerBase(setter, getter) { baseSubscribers.push({ set: setter, get: getter }); }
   var globalBaseSelect = null;
@@ -1021,22 +1026,27 @@ function rrInit() {
     for (var i = 0; i < a.length; i++) { if (a[i] !== b[i]) { return false; } }
     return true;
   }
-  // Render-time presentation keys. percent_base is deliberately absent: like
-  // sort_by it is stamped into the CSV by the frequencies stage, so it belongs
-  // in the "needs a re-run" block rather than here.
-  function buildDiff(kind, effective, edited) {
-    var keys = kind === "flat"
-      ? ["show_code", "stats", "response_total", "pct_decimals", "hide_codes"]
-      : ["show_code", "orientation", "overall", "response_total", "stats", "pct_decimals", "hide_codes"];
-    var listKeys = { stats: true, hide_codes: true };
-    var diff = {};
-    keys.forEach(function (key) {
-      var same = listKeys[key]
-        ? arraysEqual(effective[key], edited[key])
-        : effective[key] === edited[key];
-      if (!same) { diff[key] = edited[key]; }
-    });
-    return diff;
+  // The config for a table as it currently stands -- every applicable key, not
+  // just what differs from the file, so an unmodified table still shows a
+  // complete block you can paste or export.
+  function tableConfig(kind, state, groupBy) {
+    var cfg = {};
+    if (kind === "grouped") { cfg.group_by = (groupBy || []).slice(); }
+    cfg.show_code = state.show_code;
+    if (kind === "grouped") { cfg.orientation = state.orientation; cfg.overall = state.overall; }
+    cfg.response_total = state.response_total;
+    cfg.stats = state.stats.slice();
+    cfg.pct_decimals = state.pct_decimals;
+    cfg.hide_codes = state.hide_codes.slice();
+    return cfg;
+  }
+  // Keys the frequencies stage owns; they sit on the question, never on a
+  // table spec, and only take effect after that stage is re-run.
+  function questionConfig(state, sort, axis) {
+    var cfg = { include: state.include !== false, percent_base: state.percent_base };
+    var sc = sortConfig(sort, axis);
+    for (var k in sc.keys) { cfg[k] = sc.keys[k]; }
+    return { cfg: cfg, note: sc.note };
   }
   // Translate a browser sort into config keys. sort_by/response_order are
   // question-level keys consumed when the frequency CSVs are written, so they are
@@ -1070,19 +1080,43 @@ function rrInit() {
     wrap.appendChild(hint);
     var textarea = document.createElement("textarea");
     textarea.className = "rr-snippet-body";
-    textarea.readOnly = true;
-    textarea.rows = 4;
+    textarea.rows = 8;
+    textarea.spellcheck = false;
     wrap.appendChild(textarea);
     var copyBtn = document.createElement("button");
     copyBtn.type = "button";
     copyBtn.className = "rr-copy-btn";
     copyBtn.textContent = "Copy";
     wrap.appendChild(copyBtn);
+    var resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "rr-copy-btn";
+    resetBtn.textContent = "Regenerate";
+    resetBtn.style.marginLeft = "0.4rem";
+    resetBtn.hidden = true;
+    wrap.appendChild(resetBtn);
     var note = document.createElement("span");
     note.className = "rr-note";
     note.style.marginLeft = "0.5rem";
     wrap.appendChild(note);
     parent.appendChild(wrap);
+
+    // The box is editable so you can adjust the JSON before copying. Once you
+    // type in it, control changes stop overwriting your text -- otherwise a
+    // stray toggle would silently discard the edit -- until you Regenerate.
+    var dirty = false;
+    var latest = "";
+    textarea.addEventListener("input", function () {
+      dirty = textarea.value !== latest;
+      resetBtn.hidden = !dirty;
+      note.textContent = dirty ? "Edited \\u2014 no longer tracking the controls." : "";
+    });
+    resetBtn.addEventListener("click", function () {
+      textarea.value = latest;
+      dirty = false;
+      resetBtn.hidden = true;
+      note.textContent = "";
+    });
 
     copyBtn.addEventListener("click", function () {
       var text = textarea.value;
@@ -1094,7 +1128,7 @@ function rrInit() {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(function () {
           note.textContent = "Copied!";
-          setTimeout(function () { note.textContent = ""; }, 1500);
+          setTimeout(function () { note.textContent = dirty ? "Edited \\u2014 no longer tracking the controls." : ""; }, 1500);
         }, fallback);
       } else {
         fallback();
@@ -1103,14 +1137,13 @@ function rrInit() {
     return function (obj) {
       var empty = !obj || Object.keys(obj).length === 0;
       wrap.style.display = empty ? "none" : "";
-      // Cleared rather than just hidden, so a stale snippet can't be copied.
-      textarea.value = empty ? "" : JSON.stringify(obj, null, 2);
-      copyBtn.disabled = empty;
-      note.textContent = "";
+      latest = empty ? "" : JSON.stringify(obj, null, 2);
+      if (!dirty) { textarea.value = latest; }
+      copyBtn.disabled = empty && !dirty;
       return !empty;
     };
   }
-  function buildSnippetPanel(container, kind, questionId, groupKeys, effective, getEdited, getSort, getAxis) {
+  function buildSnippetPanel(container, kind, questionId, groupBy, getEdited, getSort, getAxis) {
     var details = document.createElement("details");
     details.className = "rr-snippet";
     var summary = document.createElement("summary");
@@ -1118,38 +1151,25 @@ function rrInit() {
     details.appendChild(summary);
     container.appendChild(details);
 
-    var groupByText = groupKeys.map(function (g) { return '"' + g + '"'; }).join(", ");
+    var groupByText = groupBy.map(function (g) { return '"' + g + '"'; }).join(", ");
     var presHint = kind === "flat"
-      ? "Paste into \\"" + questionId + "\\"'s block in qualtrics_frequency_config.json."
-      : "Paste into the matching \\"tables\\" entry (group_by: [" + groupByText +
-        "]) for \\"" + questionId + "\\".";
-    // Sort keys always belong to the question block, even for a grouped table.
-    var sortHint = "Paste into \\"" + questionId + "\\"'s block (not the \\"tables\\" entry). " +
-      "Applied when frequency tables are generated \\u2014 re-run the frequencies stage to see it.";
+      ? "This table's settings, for \\"" + questionId + "\\"'s block in qualtrics_frequency_config.json."
+      : "This breakout's \\"tables\\" entry (group_by: [" + groupByText + "]) for \\"" + questionId + "\\".";
+    var qHint = "Question-level keys for \\"" + questionId + "\\" (not the \\"tables\\" entry). " +
+      "Applied when frequency tables are generated \\u2014 re-run the frequencies stage for these.";
 
     var setPres = snippetPart(details, presHint);
-    var setSort = snippetPart(details, sortHint);
-
-    var empty = document.createElement("div");
-    empty.className = "rr-snippet-hint";
-    empty.textContent = "No changes \\u2014 matches the current config.";
-    details.appendChild(empty);
-    var sortNote = document.createElement("div");
-    sortNote.className = "rr-snippet-hint";
-    details.appendChild(sortNote);
+    var setQuestion = snippetPart(details, qHint);
+    var note = document.createElement("div");
+    note.className = "rr-snippet-hint";
+    details.appendChild(note);
 
     function refresh() {
-      var edited = getEdited();
-      var shown = setPres(buildDiff(kind, effective, edited));
-      var sc = sortConfig(getSort(), getAxis());
-      // percent_base joins the sort keys: it is stamped into the CSV by the
-      // frequencies stage, so it carries the same "re-run to apply" caveat.
-      var reRun = {};
-      if (edited.percent_base !== effective.percent_base) { reRun.percent_base = edited.percent_base; }
-      for (var k in sc.keys) { reRun[k] = sc.keys[k]; }
-      shown = setSort(reRun) || shown;
-      sortNote.textContent = sc.note;
-      empty.style.display = shown ? "none" : "";
+      var state = getEdited();
+      setPres(tableConfig(kind, state, groupBy));
+      var q = questionConfig(state, getSort(), getAxis());
+      setQuestion(q.cfg);
+      note.textContent = q.note;
     }
     return refresh;
   }
@@ -1176,9 +1196,14 @@ function rrInit() {
       pct_decimals: effective.pct_decimals,
       hide_codes: effective.hide_codes.slice(),
       percent_base: effective.percent_base,
+      include: true,
       sort: null,
     };
     var hasAttr = hasAttributeIn(sdata.rows);
+    // Hiding a table leaves its heading and controls in place, so it can be
+    // brought back; only the data itself goes.
+    var hideables = [tableEl].concat(Array.prototype.slice.call(
+      tableEl.parentNode.querySelectorAll("table.writein, div.meta + table")));
     var metaEl = toolsEl.previousElementSibling;
     if (!metaEl || !metaEl.classList || !metaEl.classList.contains("meta")) { metaEl = null; }
     registerDecimals(function (d) { state.pct_decimals = d; rerender(); }, function () { return state.pct_decimals; });
@@ -1186,6 +1211,7 @@ function rrInit() {
 
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
+      hideables.forEach(function (el) { el.hidden = !state.include; });
       renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort);
       if (metaEl) {
         var shown = applyHidden(sdata.rows, state.hide_codes);
@@ -1195,10 +1221,12 @@ function rrInit() {
       }
       refreshDefs();
       refreshSnippet();
+      refreshFullConfig();
     }
 
     var row1 = document.createElement("div");
     row1.className = "rr-row";
+    addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
     addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
     addSelect(row1, "Total row", state.response_total || "", POSITION_OPTS, function (v) { state.response_total = v || false; rerender(); });
     addSelect(row1, "Reporting base", state.percent_base, BASE_OPTS, function (v) { state.percent_base = v; syncBase(v); rerender(); });
@@ -1214,14 +1242,9 @@ function rrInit() {
 
     var refreshDefs = buildDefsPanel(toolsEl, function () { return state.percent_base; }, "flat",
       function () { return state.stats; });
-    var refreshSnippet = buildSnippetPanel(toolsEl, "flat", sdata.question_id, [], effective,
-      function () {
-        return {
-          show_code: state.show_code, stats: state.stats, response_total: state.response_total,
-          pct_decimals: state.pct_decimals, hide_codes: state.hide_codes,
-          percent_base: state.percent_base,
-        };
-      },
+    function flatState() { return state; }
+    var refreshSnippet = buildSnippetPanel(toolsEl, "flat", sdata.question_id, [],
+      flatState,
       function () { return state.sort; },
       function () {
         return {
@@ -1234,6 +1257,17 @@ function rrInit() {
           },
         };
       });
+    registerSection({
+      qkey: sdata.question_key, kind: "flat", groupBy: [],
+      state: flatState, sort: function () { return state.sort; },
+      axis: function () {
+        return { sortsResponses: true, hasAttr: hasAttr, codes: function () {
+          return sortItems(sdata.rows, state.sort, function (row) {
+            return flatValueOf(row, state.sort.key, sdata.report_base);
+          }).map(function (row) { return row.response_code || ""; });
+        } };
+      },
+    });
     rerender(); // re-render once so the headers become sort controls
   }
 
@@ -1263,6 +1297,7 @@ function rrInit() {
       pct_decimals: effective.pct_decimals,
       hide_codes: effective.hide_codes.slice(),
       percent_base: effective.percent_base,
+      include: true,
       sort: null,
     };
     var metaEl = toolsEl.previousElementSibling;
@@ -1275,6 +1310,7 @@ function rrInit() {
     // previous orientation no longer addresses a real column.
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
+      tableEl.hidden = !state.include;
       lastPivot = renderGrouped(tableEl, sdata, state, state.sort, onSort);
       if (metaEl) {
         var statNames = state.stats.map(function (s) { return statLabel(s, state.percent_base); }).join(", ");
@@ -1283,10 +1319,12 @@ function rrInit() {
       }
       refreshDefs();
       refreshSnippet();
+      refreshFullConfig();
     }
 
     var row1 = document.createElement("div");
     row1.className = "rr-row";
+    addCheckbox(row1, "Show this table", state.include, function (v) { state.include = v; rerender(); });
     addCheckbox(row1, "Show code column", state.show_code, function (v) { state.show_code = v; rerender(); });
     addSelect(row1, "Orientation", state.orientation, [["columns", "Columns"], ["rows", "Rows"]], function (v) {
       state.orientation = v;
@@ -1316,16 +1354,10 @@ function rrInit() {
 
     var refreshDefs = buildDefsPanel(toolsEl, function () { return state.percent_base; }, "grouped",
       function () { return state.stats; });
-    var groupByList = sdata.group_keys ? sdata.group_keys.split(" | ") : [];
-    var refreshSnippet = buildSnippetPanel(toolsEl, "grouped", sdata.question_id, groupByList, effective,
-      function () {
-        return {
-          show_code: state.show_code, orientation: state.orientation, overall: state.overall,
-          response_total: state.response_total, stats: state.stats,
-          pct_decimals: state.pct_decimals, hide_codes: state.hide_codes,
-          percent_base: state.percent_base,
-        };
-      },
+    var groupByList = sdata.group_by || [];
+    function groupedState() { return state; }
+    var refreshSnippet = buildSnippetPanel(toolsEl, "grouped", sdata.question_id, groupByList,
+      groupedState,
       function () { return state.sort; },
       function () {
         // Only the columns orientation puts response options on the row axis, so
@@ -1346,6 +1378,17 @@ function rrInit() {
           },
         };
       });
+    function groupedAxis() {
+      return {
+        sortsResponses: state.orientation !== "rows",
+        hasAttr: !!(lastPivot && lastPivot.hasAttr),
+        codes: function () { return []; },
+      };
+    }
+    registerSection({
+      qkey: sdata.question_key, kind: "grouped", groupBy: groupByList,
+      state: groupedState, sort: function () { return state.sort; }, axis: groupedAxis,
+    });
     rerender(); // re-render once so the headers become sort controls
   }
 
@@ -1354,6 +1397,40 @@ function rrInit() {
     if (el.getAttribute("data-kind") === "grouped") { initGroupedSection(el, slug); }
     else { initFlatSection(el, slug); }
   });
+
+  // The whole report as one config: question-level keys from each question's
+  // ungrouped table, and a "tables" entry per breakout. A question with only an
+  // ungrouped table keeps its keys at question level, where they already apply,
+  // rather than carrying a redundant {"group_by": []} spec.
+  function buildReportConfig() {
+    var questions = {};
+    var order = [];
+    configSections.forEach(function (sec) {
+      var qkey = sec.qkey;
+      if (!(qkey in questions)) { questions[qkey] = { flat: null, tables: [] }; order.push(qkey); }
+      if (sec.kind === "flat") { questions[qkey].flat = sec; }
+      else { questions[qkey].tables.push(sec); }
+    });
+    var out = {};
+    order.forEach(function (qkey) {
+      var q = questions[qkey];
+      var lead = q.flat || q.tables[0];
+      var st = lead.state();
+      var block = questionConfig(st, lead.sort(), lead.axis()).cfg;
+      if (q.flat) {
+        var flatCfg = tableConfig("flat", q.flat.state(), []);
+        for (var k in flatCfg) { block[k] = flatCfg[k]; }
+      }
+      var specs = q.tables.filter(function (t) { return t.state().include !== false; })
+        .map(function (t) { return tableConfig("grouped", t.state(), t.groupBy); });
+      // An ungrouped table alongside breakouts needs its own spec, or the
+      // "tables" list would replace it rather than sit beside it.
+      if (specs.length && q.flat) { specs.unshift({ group_by: [] }); }
+      if (specs.length) { block.tables = specs; }
+      out[qkey] = block;
+    });
+    return { questions: out };
+  }
 
   // Report-level control, wired after the sections so every setter is registered.
   var globalHost = document.getElementById("rr-global");
@@ -1385,6 +1462,20 @@ function rrInit() {
     note.textContent = "Each table can override these in its own controls.";
     row.appendChild(note);
     globalHost.appendChild(row);
+
+    // The whole report as one config file, tracking every control on the page.
+    var full = document.createElement("details");
+    full.className = "rr-snippet";
+    var fullSummary = document.createElement("summary");
+    fullSummary.textContent = "Show config for the whole report";
+    full.appendChild(fullSummary);
+    globalHost.appendChild(full);
+    var setFull = snippetPart(full,
+      "Every question as currently shown \\u2014 paste over qualtrics_frequency_config.json. " +
+      "include, percent_base, sort_by and response_order are applied by the frequencies " +
+      "stage, so re-run it for those; the rest apply on the next report render.");
+    refreshFullConfig = function () { setFull(buildReportConfig()); };
+    refreshFullConfig();
   }
 }
 
@@ -1499,6 +1590,7 @@ def _render_question_section(
         {
             "kind": "flat",
             "question_id": question_id,
+            "question_key": qkey,
             "meta_prefix": f"Type: {qtype} \u00b7 Scale: {scale}",
             "report_base": report_base,
             # Unfiltered, so the browser can re-apply or undo hide_codes itself.
@@ -1663,6 +1755,8 @@ def _render_grouped_section(
         {
             "kind": "grouped",
             "question_id": question_id,
+            "question_key": first.get("question_key") or slug,
+            "group_by": [g for g in group_keys.split(" | ") if g],
             "report_base": report_base,
             "group_keys": group_keys,
             # Unfiltered, so the browser can re-apply or undo hide_codes itself.

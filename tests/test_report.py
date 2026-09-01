@@ -489,3 +489,36 @@ def test_star_only_when_several_percentages_are_shown(tmp_path) -> None:
     several = _render(tmp_path / "b", _based_rows(),
                       {"stats": ["n", "valid_pct", "eligible_pct", "total_pct"]})
     assert "Eligible % &#9733;" in several   # the featured base is marked again
+
+
+# ---------------------------------------------------------------------------
+# Config export scaffolding
+# ---------------------------------------------------------------------------
+
+def test_sections_carry_the_keys_the_config_export_needs(tmp_path) -> None:
+    """The whole-report config groups tables under their question, so each
+    section has to name its question key, and a breakout its group_by."""
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", [_base_row()])
+    _write_freq_csv(freq_dir / "QID2__by__Q1.9_frequencies.csv", [
+        _grouped_row("1", "Uniform A", "1", "Schofield", "10", "20", "50.0"),
+    ])
+    html = generate_html_report(run_dir).read_text()
+
+    flat = html.split('id="QID2-data"')[1].split("</script>")[0]
+    assert '"question_key": "QID2"' in flat
+
+    grouped = html.split('id="QID2__by__Q1.9-data"')[1].split("</script>")[0]
+    assert '"question_key": "QID2"' in grouped
+    assert '"group_by": ["Q1.9"]' in grouped
+
+
+def test_report_exposes_a_host_for_the_whole_report_config(tmp_path) -> None:
+    html = generate_html_report(_flat_run(tmp_path)).read_text()
+    assert 'id="rr-global"' in html
+    # the browser builds both the per-table and the report-wide config from these
+    assert "function buildReportConfig" in html
+    assert "function tableConfig" in html
+    assert "function questionConfig" in html
