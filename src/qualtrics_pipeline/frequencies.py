@@ -216,6 +216,20 @@ FREQUENCY_DEFAULTS = {
     "include_empty_codes": False,  # emit n = 0 rows for defined-but-unchosen codes
 }
 
+
+def _stamp_frequency_opts(cfg: dict, mappings: list[dict[str, Any]]) -> dict:
+    """Frequency-stage options as resolved for this question.
+
+    sort_by is stamped *resolved* rather than as configured: the report needs to
+    know what order the rows are actually in, and "auto" does not say. Writing
+    the resolved value back into a config is equivalent, since that is what auto
+    would resolve to again.
+    """
+    out = _resolve_frequency_opts(cfg)
+    qtype = mappings[0].get("question_type", "") if mappings else ""
+    out["sort_by"] = _effective_sort_by(cfg, qtype)
+    return out
+
 # A multi-select column encodes a single choice: the column *is* the option, and
 # its response_labels are {"0": "Not selected", "1": "Selected"} rather than the
 # choice list. So the code worth filling in is the "selected" marker alone --
@@ -240,6 +254,40 @@ def _codes_to_fill(labels: dict[str, str], is_multi_select: bool) -> list[str]:
         return list(labels)
     selected = [c for c in labels if c not in _UNSELECTED_CODES]
     return selected or [_SELECTED_CODE]
+
+
+def _is_write_in(mapping: dict[str, Any]) -> bool:
+    """Whether a column's values are verbatim answers rather than coded ones.
+
+    The name check is a fallback for column maps written before the exporter
+    carried the flag, where a _TEXT column is otherwise indistinguishable from
+    its parent -- right down to inheriting its response_labels.
+    """
+    return bool(mapping.get("is_text_entry_suffix")) or mapping["column"].endswith("_TEXT")
+
+
+def _code_universe(mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every code a question defines, per column, in survey order.
+
+    Stamped into the manifest so the report can fill in zero-response rows and
+    offer survey order without re-reading the column map -- the browser has only
+    the CSV, which by definition cannot show a code nobody chose.
+    """
+    out = []
+    for m in mappings:
+        if _is_write_in(m):
+            continue
+        labels = m.get("response_labels") or {}
+        codes = _codes_to_fill(labels, m.get("selector") in MULTI_SELECTORS)
+        if not codes:
+            continue
+        out.append({
+            "column": m["column"],
+            "attribute": m.get("sub_question_text", ""),
+            "multi_select": m.get("selector") in MULTI_SELECTORS,
+            "codes": [[c, labels.get(c, c)] for c in codes],
+        })
+    return out
 
 
 def _is_groupable(mapping: dict[str, Any]) -> bool:
@@ -413,12 +461,8 @@ def _build_question_rows(subset, qkey, mappings, cfg, display_logic, group_cols)
         # the question-level "answered any option" total as the valid base.
         is_multi_select = m.get("selector") in MULTI_SELECTORS
         # A write-in column's "codes" are the verbatim answers, so there is no
-        # defined set to fill in; the parent question's labels would be nonsense
-        # here. The name check is a fallback for column maps written before the
-        # exporter carried the flag, where a _TEXT column is otherwise
-        # indistinguishable from its parent.
-        is_write_in = bool(m.get("is_text_entry_suffix")) or m["column"].endswith("_TEXT")
-        fill = _codes_to_fill(labels, is_multi_select) if include_empty and not is_write_in else []
+        # defined set to fill in; the parent question's labels would be nonsense here.
+        fill = _codes_to_fill(labels, is_multi_select) if include_empty and not _is_write_in(m) else []
         if not valid and not fill:
             continue
         counts = Counter(valid)
@@ -559,7 +603,8 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                 table_meta[qkey] = {
                     "qkey": qkey, "group_by": [], "n_groups": 1,
                     "dropped_missing": 0, "presentation": presentation,
-                    "frequency": _resolve_frequency_opts(cfg),
+                    "frequency": _stamp_frequency_opts(cfg, mappings),
+                    "code_universe": _code_universe(mappings),
                 }
                 continue
 
@@ -595,7 +640,8 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                 "n_groups": len(level_rows),
                 "dropped_missing": dropped,
                 "presentation": presentation,
-                "frequency": _resolve_frequency_opts(cfg),
+                "frequency": _stamp_frequency_opts(cfg, mappings),
+                "code_universe": _code_universe(mappings),
             }
 
     return tables, text_outputs, {"table_specs": table_meta, "grouping_warnings": warnings}
@@ -716,6 +762,11 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
             slug: meta["frequency"]
             for slug, meta in report_meta["table_specs"].items()
             if tables.get(slug)
+        },
+        "table_code_universe": {
+            slug: meta["code_universe"]
+            for slug, meta in report_meta["table_specs"].items()
+            if tables.get(slug) and meta["code_universe"]
         },
         "output_files": [str(p) for p in outs],
     }
