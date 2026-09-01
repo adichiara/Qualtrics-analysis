@@ -545,3 +545,61 @@ def test_report_can_read_a_config_back_in(tmp_path) -> None:
     assert "function readConfig" in html
     assert "function applyConfig" in html
     assert "function applyReportConfig" in html
+
+
+# ---------------------------------------------------------------------------
+# include_empty_codes reaches the browser as a question-level key
+# ---------------------------------------------------------------------------
+
+def _empty_codes_run(tmp_path, include_empty: bool):
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    _write_freq_csv(freq_dir / "QID2_frequencies.csv", [
+        _base_row(response_code="1", response_label="Schofield", n="42"),
+        _base_row(response_code="2", response_label="Fort Bragg", n="59"),
+        _base_row(response_code="3", response_label="Nobody picked me", n="0", valid_pct="0.0",
+                  eligible_pct="0.0", total_pct="0.0"),
+    ])
+    (run_dir / "frequency_manifest.json").write_text(
+        json.dumps({
+            "data_path": "x.csv",
+            "table_presentation": {"QID2": {}},
+            "table_frequency_opts": {"QID2": {"include_empty_codes": include_empty}},
+        }),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def _blob(html: str, slug: str) -> dict:
+    raw = html.split(f'id="{slug}-data">')[1].split("</script>")[0]
+    return json.loads(raw)
+
+
+def test_include_empty_codes_reaches_the_data_blob(tmp_path) -> None:
+    html = generate_html_report(_empty_codes_run(tmp_path, True)).read_text()
+    assert _blob(html, "QID2")["presentation"]["include_empty_codes"] is True
+
+
+def test_include_empty_codes_defaults_off_without_a_manifest_entry(tmp_path) -> None:
+    html = generate_html_report(_flat_run(tmp_path)).read_text()
+    assert _blob(html, "QID2")["presentation"]["include_empty_codes"] is False
+
+
+def test_zero_count_rows_are_server_rendered_as_written(tmp_path) -> None:
+    # The initial HTML mirrors the CSV; only the browser control filters them.
+    html = generate_html_report(_empty_codes_run(tmp_path, True)).read_text()
+    table = html.split('id="QID2-table"')[1].split("</table>")[0]
+    assert "Nobody picked me" in table
+
+
+def test_include_empty_codes_is_a_question_level_config_key() -> None:
+    from qualtrics_pipeline import report as report_mod
+
+    script = report_mod._SCRIPT
+    # Emitted in the question block, never in a table spec.
+    assert "include_empty_codes: !!state.include_empty_codes" in script
+    assert '"include_empty_codes"];' in script
+    table_keys = script.split('var TABLE_KEYS = ')[1].split("];")[0]
+    assert "include_empty_codes" not in table_keys

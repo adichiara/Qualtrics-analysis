@@ -229,3 +229,22 @@ def test_new_presentation_keys_allowed_on_a_table_spec():
         {"group_by": ["Q1.9"], "pct_decimals": 0, "hide_codes": ["-1"]},
     ]}}}
     assert _errors(validate_config(cfg, _column_map())) == []
+
+
+def test_include_empty_codes_validated():
+    cfg = {"questions": {"QID2": {"include_empty_codes": True}}}
+    assert _errors(validate_config(cfg, _column_map())) == []
+
+    bad = {"questions": {"QID2": {"include_empty_codes": "yes"}}}
+    assert any("include_empty_codes" in m for _w, m in _errors(validate_config(bad, _column_map())))
+
+
+def test_include_empty_codes_on_a_table_spec_warns():
+    # It changes which rows get written for the whole question, so a per-table
+    # value could not be honored; say so rather than appearing to accept it.
+    cfg = {"questions": {"QID2": {"tables": [
+        {"group_by": ["Q1.9"], "include_empty_codes": True},
+    ]}}}
+    issues = validate_config(cfg, _column_map())
+    assert _errors(issues) == []
+    assert any("include_empty_codes" in msg for level, _w, msg in issues if level == "warning")
