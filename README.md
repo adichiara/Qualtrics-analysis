@@ -170,8 +170,15 @@ Layout:
 - Each question gets a heading (its export tag and text), then its table, then a
   caption naming the percentage base. Its crosstabs follow under "By <question>"
   sub-headings, and write-in responses follow in their own Response/Count table.
-- Header rows are shaded and repeat on a new page; body rows are banded and never
-  split across a page; a short table stays on one page with its heading.
+- Tables use a border theme: `corporate` (default — dark outline and header rule,
+  light lines between rows, none between columns), `minimal` (no outline),
+  `boxed` (light outline) or `grid` (every line). Values are centred under their
+  headers. Header rows are shaded and repeat on a new page; body rows are banded
+  and never split across a page; a short table stays on one page with its heading.
+- A rating matrix is a grid, as it appears in the survey: one row per item, one
+  column per scale point (in survey order), with Total and Missing as columns and a
+  Valid n column when Valid is the base. `"matrices": {"layout": "list"}` gives the
+  long item × answer list instead.
 - The Total row is bold with a rule above it; the Missing row is italic and last.
 - A select-all question lists its options as the responses, rather than repeating
   "Selected" on every row.
@@ -194,18 +201,27 @@ Every setting is optional:
   "questions": { "numbering": "survey",   // survey (Q1.5) | sequential | off
                  "bold": true, "page_break_before": false, "show_base": true,
                  "space_before_pt": 14 },
-  "tables": { "header_color": "#EAEAEA", "banded_rows": true, "band_color": "#F7F7F7",
-              "borders": { "enabled": true, "weight_pt": 0.5, "color": "#BFBFBF" },
-              "cell_padding_inches": 0.04, "stat_column_width_inches": 0.8,
+  "tables": { "theme": "corporate",       // minimal | boxed | corporate | grid
+              "spacing": "tight",          // tight | normal | spacious cell padding
+              "cell_padding_inches": null, // overrides spacing's left/right padding
+              "value_align": "center",     // center | right
+              "header_color": "#F2F2F2", "banded_rows": true, "band_color": "#F9F9F9",
+              "outline": { "weight_pt": 1.25, "color": "#000000" },  // heavy lines
+              "divider": { "weight_pt": 0.5, "color": "#A6A6A6" },   // light lines
+              "stat_column_width_inches": 0.8,
               "code_column_width_inches": 0.5, "attribute_column_width_inches": null,
               "min_group_column_width_inches": 0.55, "keep_together_max_rows": 30 },
-  "crosstabs": { "header_rotation": "auto", "rotate_at_columns": 8 },  // auto | always | never
+  "crosstabs": { "header_rotation": "auto",  // auto | always | never
+                 "rotate_at_columns": 8, "header_max_height_inches": 1.5 },
+  "matrices": { "layout": "grid", "max_columns": 12 },  // grid | list
   "write_ins": { "show": true, "max_rows": null }
 }
 ```
 
-The table styling follows the conventions of the
-[Qualtrics document generator](https://github.com/adichiara/Qualtrics-document-generator).
+The table styling draws on the
+[Qualtrics document generator](https://github.com/adichiara/Qualtrics-document-generator)
+and on the border themes, spacing presets and Likert grid from the earlier
+reporting demo notebook.
 
 ## HTML validation report
 

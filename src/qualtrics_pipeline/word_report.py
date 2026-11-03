@@ -39,6 +39,8 @@ from .report import (
     _MISSING_CODE,
     _MISSING_LABEL,
     _N_FIELD,
+    _aggregate_rows,
+    _numeric_sort_key,
     _stat_field,
     _stat_label,
     flat_layout,
@@ -79,11 +81,15 @@ DEFAULT_STYLE: dict[str, Any] = {
         "space_before_pt": 14,
     },
     "tables": {
-        "header_color": "#EAEAEA",
+        "theme": "corporate",      # minimal | boxed | corporate | grid (see _THEMES)
+        "spacing": "tight",        # tight | normal | spacious cell padding
+        "cell_padding_inches": None,  # overrides spacing's left/right padding
+        "value_align": "center",   # center | right, for the numbers
+        "header_color": "#F2F2F2",
         "banded_rows": True,
-        "band_color": "#F7F7F7",
-        "borders": {"enabled": True, "weight_pt": 0.5, "color": "#BFBFBF"},
-        "cell_padding_inches": 0.04,
+        "band_color": "#F9F9F9",
+        "outline": {"weight_pt": 1.25, "color": "#000000"},   # table edge, header rule
+        "divider": {"weight_pt": 0.5, "color": "#A6A6A6"},    # lines between rows/columns
         "stat_column_width_inches": 0.8,
         "code_column_width_inches": 0.5,
         "attribute_column_width_inches": None,
@@ -93,6 +99,13 @@ DEFAULT_STYLE: dict[str, Any] = {
     "crosstabs": {
         "header_rotation": "auto",     # auto | always | never
         "rotate_at_columns": 8,
+        "header_max_height_inches": 1.5,  # a taller sideways header is clipped to this
+    },
+    "matrices": {
+        # grid: one row per item, one column per scale point (a rating matrix as it
+        #       appears in the survey); list: one row per item x answer.
+        "layout": "grid",
+        "max_columns": 12,         # more distinct answers than this -> list
     },
     "write_ins": {
         "show": True,
@@ -100,7 +113,23 @@ DEFAULT_STYLE: dict[str, Any] = {
     },
 }
 
+# Which lines each theme draws: the table's outline, the rule under the header,
+# and the dividers between rows and between columns. "heavy" lines use
+# tables.outline, "light" ones tables.divider.
+_THEMES = {
+    "minimal":   {"outline": None,    "header": "heavy", "rows": "light", "cols": None},
+    "boxed":     {"outline": "light", "header": "light", "rows": "light", "cols": None},
+    "corporate": {"outline": "heavy", "header": "heavy", "rows": "light", "cols": None},
+    "grid":      {"outline": "light", "header": "light", "rows": "light", "cols": "light"},
+}
+# Cell padding in inches: (top/bottom, left/right).
+_SPACING = {"tight": (0.02, 0.05), "normal": (0.05, 0.08), "spacious": (0.12, 0.15)}
+
 _ENUMS = {
+    "theme": set(_THEMES),
+    "spacing": set(_SPACING),
+    "value_align": {"center", "right"},
+    "layout": {"grid", "list"},
     "paper_size": {"letter", "a4", "legal"},
     "orientation": {"portrait", "landscape"},
     "numbering": {"survey", "sequential", "off"},
@@ -108,8 +137,8 @@ _ENUMS = {
 }
 _PAGE_SIZES = {"letter": (8.5, 11.0), "a4": (210 / 25.4, 297 / 25.4), "legal": (8.5, 14.0)}
 # Settings that may be null; every other default fixes the setting's type.
-_NULLABLE = {"title", "attribute_column_width_inches", "max_rows"}
-_INTEGER = {"rotate_at_columns", "keep_together_max_rows", "max_rows"}
+_NULLABLE = {"title", "attribute_column_width_inches", "max_rows", "cell_padding_inches"}
+_INTEGER = {"rotate_at_columns", "keep_together_max_rows", "max_rows", "max_columns"}
 _ZERO_OK = {"cell_padding_inches", "space_before_pt"}
 
 
@@ -230,9 +259,16 @@ def _zero_spacing(p, line_spacing: float = 1.0) -> None:
     p.paragraph_format.line_spacing = line_spacing
 
 
+# Arial advance widths (em) for the characters a number cell holds; anything
+# else is taken as an average letter.
+_ARIAL_EM = {**dict.fromkeys("0123456789", 0.556), ".": 0.278, ",": 0.278, "%": 0.889,
+             " ": 0.278, "-": 0.333}
+
+
 def _text_width_in(text: str, size: float, bold: bool = False) -> float:
-    """Rough Arial advance in inches -- enough to size a rotated header."""
-    return len(text) * size * (0.56 if not bold else 0.6) / 72
+    """Approximate Arial width in inches -- enough to size columns and headers."""
+    em = sum(_ARIAL_EM.get(ch, 0.56) for ch in text)
+    return em * size * (1.06 if bold else 1.0) / 72
 
 
 # ---------------------------------------------------------------------------
@@ -389,19 +425,23 @@ class _Writer:
         tblw.set(qn("w:w"), str(round(sum(widths) * 1440)))
         tblw.set(qn("w:type"), "dxa")
         borders = OxmlElement("w:tblBorders")
-        b = t["borders"]
-        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        theme = _THEMES[t["theme"]]
+        for edge, weight in (("top", theme["outline"]), ("left", theme["outline"]),
+                             ("bottom", theme["outline"]), ("right", theme["outline"]),
+                             ("insideH", theme["rows"]), ("insideV", theme["cols"])):
             el = OxmlElement(f"w:{edge}")
-            el.set(qn("w:val"), "single" if b["enabled"] else "nil")
-            if b["enabled"]:
-                el.set(qn("w:sz"), str(round(b["weight_pt"] * 8)))
-                el.set(qn("w:color"), _hex(b["color"]))
+            line = self._line(weight)
+            el.set(qn("w:val"), "single" if line else "nil")
+            if line:
+                el.set(qn("w:sz"), str(round(line[0] * 8)))
+                el.set(qn("w:color"), _hex(line[1]))
             borders.append(el)
         tblpr.append(borders)
         margins = OxmlElement("w:tblCellMar")
+        pad_v, pad_h = self._padding()
         for edge in ("top", "bottom", "left", "right"):
             el = OxmlElement(f"w:{edge}")
-            pad = t["cell_padding_inches"] if edge in ("left", "right") else t["cell_padding_inches"] / 2
+            pad = pad_h if edge in ("left", "right") else pad_v
             el.set(qn("w:w"), str(round(pad * 1440)))
             el.set(qn("w:type"), "dxa")
             margins.append(el)
@@ -414,6 +454,25 @@ class _Writer:
                 cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
                 _zero_spacing(cell.paragraphs[0])
         return table
+
+    def _line(self, weight: str | None) -> tuple[float, str] | None:
+        """(points, color) for a "heavy"/"light" line, or None for no line."""
+        if weight is None:
+            return None
+        spec = self.style["tables"]["outline" if weight == "heavy" else "divider"]
+        return spec["weight_pt"], spec["color"]
+
+    def _padding(self) -> tuple[float, float]:
+        t = self.style["tables"]
+        pad_v, pad_h = _SPACING[t["spacing"]]
+        if t["cell_padding_inches"] is not None:
+            pad_h = t["cell_padding_inches"]
+        return pad_v, pad_h
+
+    @property
+    def _value_align(self):
+        return (WD_ALIGN_PARAGRAPH.CENTER if self.style["tables"]["value_align"] == "center"
+                else WD_ALIGN_PARAGRAPH.RIGHT)
 
     def _set(self, cell, text: str, *, bold=False, italic=False, align=None, size=None, color=None):
         p = cell.paragraphs[0]
@@ -436,16 +495,23 @@ class _Writer:
             _no_split(row)
             if i < header_rows:
                 _repeat_header(row)
+                rule = self._line(_THEMES[t["theme"]]["header"])
                 for cell in row.cells:
                     _shade(cell, t["header_color"])
+                    # Header text sits on the rule under it.
+                    if cell._tc.get_or_add_tcPr().find(qn("w:textDirection")) is None:
+                        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.BOTTOM
+                    if rule and i == header_rows - 1:
+                        _cell_border(cell, "bottom", rule[0], rule[1])
                 continue
             kind = kinds[i - header_rows]
             if kind == "total":
+                heavy = self._line("heavy") or (1.0, "#808080")
                 for cell in row.cells:
-                    _cell_border(cell, "top", max(1.0, t["borders"]["weight_pt"] * 2), "#808080")
+                    _cell_border(cell, "top", heavy[0], heavy[1])
             elif kind == "missing" and (i == header_rows or kinds[i - header_rows - 1] != "missing"):
                 for cell in row.cells:
-                    _cell_border(cell, "top", t["borders"]["weight_pt"] * 2, "#A0A0A0")
+                    _cell_border(cell, "top", t["divider"]["weight_pt"] * 2, t["divider"]["color"])
             if kind == "response":
                 if t["banded_rows"] and band % 2 == 1:
                     for cell in row.cells:
@@ -477,9 +543,9 @@ class _Writer:
     def _min_value_width(self, decimals: int) -> float:
         """Narrowest column that fits "100.00%" (at this precision) unwrapped."""
         sample = "100." + "0" * decimals + "%" if decimals else "100%"
-        pad = self.style["tables"]["cell_padding_inches"] * 2
+        pad = self._padding()[1] * 2
         return max(self.style["tables"]["min_group_column_width_inches"],
-                   _text_width_in(sample, self.style["fonts"]["table_size"], True) + pad + 0.06)
+                   _text_width_in(sample, self.style["fonts"]["table_size"]) + pad + 0.04)
 
     def flat_table(self, table) -> None:
         lay = flat_layout(table.rows, table.presentation, table.missing)
@@ -495,6 +561,12 @@ class _Writer:
         options_only = has_attr and bool(coded) and all(
             str(r.get("response_label", "")) == "Selected" for r in coded
         )
+        if (self.style["matrices"]["layout"] == "grid" and has_attr and not options_only
+                and coded and len(coded) == len(responses)
+                and all((r.get("attribute") or "").strip() for r in responses)
+                and len({r.get("response_code") for r in responses}) <= self.style["matrices"]["max_columns"]):
+            self.matrix_table(table, lay)
+            return
         # No column of nothing but blanks (see _code_shown).
         show_code = (lay["show_code"] and not options_only
                      and any(_code_shown(r) for r in lay["shown"]))
@@ -517,7 +589,7 @@ class _Writer:
         for c, text in enumerate(lead_heads):
             self._set(head[c], text, bold=True)
         for c, stat in enumerate(stats, start=len(lead_heads)):
-            self._set(head[c], _stat_label(stat, base), bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+            self._set(head[c], _stat_label(stat, base), bold=True, align=self._value_align)
         kinds = []
         for i, (kind, row) in enumerate(entries, start=1):
             kinds.append(kind)
@@ -541,14 +613,151 @@ class _Writer:
             c += 1
             for stat in stats:
                 self._set(cells[c], _stat_text(row, stat, base, dec), bold=kind == "total",
-                          italic=kind == "missing", align=WD_ALIGN_PARAGRAPH.RIGHT)
+                          italic=kind == "missing", align=self._value_align)
                 c += 1
         self._finish_table(doc_table, kinds)
         self._base_line(lay["shown"][0] if lay["shown"] else None, base, lay["hidden"])
 
+    def _stacked(self, row: dict | None, stats: list[str], base: str, dec: int) -> str:
+        """A cell holding several statistics, one per line. A blank one (Valid %
+        on a Missing row) is dropped rather than leaving an empty line."""
+        if row is None:
+            return "\u2014"
+        values = [_stat_text(row, s, base, dec) for s in stats]
+        return "\n".join(v for i, v in enumerate(values) if v != "" or i == 0)
+
+    def matrix_table(self, table, lay: dict) -> None:
+        """A rating matrix as a grid: items down the side, scale points across.
+
+        Reads the same rows the list layout would show (hidden codes removed,
+        Valid n rebased), so only the arrangement differs. Total and Missing
+        become columns, since each item has its own.
+        """
+        stats, base, dec = lay["stats"], lay["report_base"], lay["decimals"]
+        pres = table.presentation
+        responses = [r for k, r in lay["entries"] if k == "response"]
+        missing = {r.get("attribute", ""): r for k, r in lay["entries"] if k == "missing"}
+
+        items: list[str] = []
+        by_item: dict[str, list[dict]] = {}
+        idx: dict[tuple[str, str], dict] = {}
+        labels: dict[str, str] = {}
+        for r in responses:
+            item, code = r.get("attribute", ""), str(r.get("response_code", ""))
+            if item not in by_item:
+                items.append(item)
+                by_item[item] = []
+            by_item[item].append(r)
+            idx[(item, code)] = r
+            labels.setdefault(code, r.get("response_label", code))
+        # Scale points in survey order where the question defines one, which is
+        # what a rating scale needs; anything else after, by code.
+        order: list[str] = []
+        for u in table.universe or []:
+            for code, _label in u.get("codes") or []:
+                if str(code) in labels and str(code) not in order:
+                    order.append(str(code))
+        order += sorted((c for c in labels if c not in order), key=_numeric_sort_key)
+
+        # Value columns: (header, kind, key)
+        columns: list[tuple[str, str, str]] = []
+        for code in order:
+            head = labels[code]
+            if lay["show_code"] and code != head:
+                head = f"{head}\n({code})"
+            columns.append((head, "response", code))
+        total_pos = pres.get("response_total")
+        if total_pos:
+            total = ("Total", "total", "")
+            columns = [total, *columns] if total_pos == "before" else [*columns, total]
+        if missing:
+            columns.append((_MISSING_LABEL, "missing", ""))
+        if base == "valid":
+            # Valid n differs item by item, so it gets a column of its own.
+            columns.append(("Valid n", "base", ""))
+        totals = {item: _aggregate_rows(rs, base) for item, rs in by_item.items()}
+
+        def text_for(item: str, kind: str, key: str) -> str:
+            if kind == "response":
+                return self._stacked(idx.get((item, key)), stats, base, dec)
+            if kind == "total":
+                return self._stacked(totals[item], stats, base, dec)
+            if kind == "missing":
+                return self._stacked(missing.get(item), stats, base, dec)
+            return str(by_item[item][0].get("valid_n", ""))
+
+        grid = {item: [text_for(item, k, key) for _h, k, key in columns] for item in items}
+        # Each column as wide as its widest value, so only the Total column
+        # pays for "100.00%"; the item column gives way (down to 1.3") before
+        # the grid is split into parts.
+        needs = [self._needed_width([grid[item][j] for item in items], kind == "total")
+                 for j, (_h, kind, _k) in enumerate(columns)]
+        t = self.style["tables"]
+        item_w = t["attribute_column_width_inches"] or max(
+            1.3, min(3.0, self.width * 0.35, self.width - sum(needs)))
+        room = self.width - item_w
+        panels = self._fit(needs, room)
+        widths = {j: w for cols in panels for j, w in zip(cols, self._spread([needs[j] for j in cols], room), strict=True)}
+        rotate = self._rotate(max(len(c) for c in panels), min(widths.values()),
+                              [h for h, _k, _c in columns])
+        size = self.style["fonts"]["table_size"]
+        for p_i, cols in enumerate(panels):
+            sub = [columns[j] for j in cols]
+            doc_table = self._new_table(len(items) + 1, [item_w] + [widths[j] for j in cols])
+            self._set(doc_table.rows[0].cells[0], "Item", bold=True)
+            for j, (head, _kind, _key) in enumerate(sub, start=1):
+                self._header_cell(doc_table.rows[0].cells[j], head, rotate)
+            for i, item in enumerate(items, start=1):
+                cells = doc_table.rows[i].cells
+                self._set(cells[0], item)
+                for j, col in enumerate(cols, start=1):
+                    kind = columns[col][1]
+                    self._set(cells[j], grid[item][col], bold=kind == "total",
+                              italic=kind == "missing", align=self._value_align, size=size)
+            if rotate:
+                self._header_height(doc_table.rows[0], [h for h, _k, _c in sub])
+            self._finish_table(doc_table, ["response"] * len(items))
+            self._panel_gap(p_i, len(panels))
+
+        stat_names = ", ".join(_stat_label(s_, base) for s_ in stats)
+        parts = [f"Cells show {stat_names}"]
+        if self.style["questions"]["show_base"] and base != "valid" and responses:
+            value = responses[0].get(_N_FIELD.get(base, "eligible_n"), "")
+            parts.append(f"Base: {_BASE_NAME.get(base, base)} n = {value}")
+        if lay["hidden"]:
+            parts.append(f"{lay['hidden']} response{'s' if lay['hidden'] != 1 else ''} hidden")
+        self._caption(" \u00b7 ".join(parts), space_before=2)
+
+    def _needed_width(self, texts: list[str], bold: bool = False) -> float:
+        """Width a value column needs to show every one of ``texts`` unwrapped."""
+        size = self.style["fonts"]["table_size"]
+        widest = max((_text_width_in(line, size, bold) for t in texts for line in t.split("\n")),
+                     default=0.0)
+        return max(self.style["tables"]["min_group_column_width_inches"],
+                   widest + self._padding()[1] * 2 + 0.04)
+
+    @staticmethod
+    def _fit(needs: list[float], room: float) -> list[list[int]]:
+        """Group columns, in order, into parts whose widths each fit ``room``."""
+        parts: list[list[int]] = [[]]
+        used = 0.0
+        for j, need in enumerate(needs):
+            if parts[-1] and used + need > room + 1e-6:
+                parts.append([])
+                used = 0.0
+            parts[-1].append(j)
+            used += need
+        return parts
+
+    @staticmethod
+    def _spread(needs: list[float], room: float, cap: float = 1.1) -> list[float]:
+        """Share spare room equally among columns, none wider than ``cap``."""
+        extra = max(0.0, room - sum(needs)) / max(len(needs), 1)
+        return [max(n, min(cap, n + extra)) for n in needs]
+
     def _panels(self, n: int, room: float, min_w: float) -> list[range]:
         """Split n value columns into balanced panels that each fit ``room``."""
-        per = max(1, int(room // min_w))
+        per = max(1, int(room / min_w + 1e-6))  # tolerance: an exact fit is a fit
         if n <= per:
             return [range(n)]
         count = math.ceil(n / per)
@@ -586,7 +795,7 @@ class _Writer:
 
         def value_cell(cell, row, kind):
             self._set(cell, cell_text(row), bold=kind == "total", italic=kind == "missing",
-                      align=WD_ALIGN_PARAGRAPH.RIGHT, size=size)
+                      align=self._value_align, size=size)
 
         if lay["orientation"] == "rows":
             # Rows are groups; columns are response options.
@@ -658,7 +867,7 @@ class _Writer:
                     for j, (gcode, _gl, _gb) in enumerate(sub):
                         value_cell(cells[c + j], data(gcode, a, code), k)
                 if rotate:
-                    self._header_height(doc_table.rows[0], [h.split("\n")[0] for h in headers])
+                    self._header_height(doc_table.rows[0], headers)
                 self._finish_table(doc_table, kinds)
                 self._panel_gap(p_i, len(panels))
 
@@ -695,17 +904,23 @@ class _Writer:
     def _header_cell(self, cell, text: str, rotate: bool) -> None:
         if rotate:
             # Rotated text reads bottom to top; the base count stays on one line.
-            self._set(cell, text.replace("\n", "  "), bold=True)
+            # Left-aligned rotated text starts at the bottom, next to the data;
+            # centring the cell puts it in the middle of its column.
+            self._set(cell, text.replace("\n", "  "), bold=True, align=WD_ALIGN_PARAGRAPH.LEFT)
             _rotate(cell)
-            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.BOTTOM
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         else:
-            self._set(cell, text, bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+            self._set(cell, text, bold=True, align=self._value_align)
 
     def _header_height(self, row, headers: list[str]) -> None:
         size = self.style["fonts"]["table_size"]
-        longest = max((_text_width_in(h, size, True) for h in headers), default=1.0)
-        row.height = Inches(min(2.4, max(0.6, longest + 0.55)))
-        row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+        longest = max((_text_width_in(h.replace("\n", "  "), size, True) for h in headers), default=1.0)
+        cap = self.style["crosstabs"]["header_max_height_inches"]
+        wanted = max(0.6, longest + 0.25)
+        row.height = Inches(min(cap, wanted))
+        # Past the cap the height is fixed, so a very long label is clipped rather
+        # than pushing the table down the page.
+        row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY if wanted > cap else WD_ROW_HEIGHT_RULE.AT_LEAST
 
     def writeins(self, rows: list[dict[str, str]]) -> None:
         counts = writein_counts(rows)
@@ -719,10 +934,10 @@ class _Writer:
         text_w = max(1.5, min(5.0, self.width - count_w))
         t = self._new_table(len(shown) + 1, [text_w, count_w])
         self._set(t.rows[0].cells[0], "Response", bold=True)
-        self._set(t.rows[0].cells[1], "Count", bold=True, align=WD_ALIGN_PARAGRAPH.RIGHT)
+        self._set(t.rows[0].cells[1], "Count", bold=True, align=self._value_align)
         for i, (text, n) in enumerate(shown, start=1):
             self._set(t.rows[i].cells[0], text)
-            self._set(t.rows[i].cells[1], str(n), align=WD_ALIGN_PARAGRAPH.RIGHT)
+            self._set(t.rows[i].cells[1], str(n), align=self._value_align)
         self._finish_table(t, ["response"] * len(shown))
         if len(shown) < len(counts):
             self._caption(f"{len(counts) - len(shown)} more distinct write-ins not shown.")
