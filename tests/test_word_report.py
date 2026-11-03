@@ -196,3 +196,72 @@ def test_word_report_regenerates_from_a_run_dir(tmp_path) -> None:
     path = generate_word_report(out, tmp_path / "again.docx", {"questions": {"numbering": "off"}})
     doc = Document(str(path))
     assert any(p.text == "Do you agree?" for p in doc.paragraphs)
+
+
+# ---------------------------------------------------------------------------
+# Themes, spacing, and the rating-matrix grid
+# ---------------------------------------------------------------------------
+
+_SCALE = {"1": "Low", "2": "Medium", "3": "High"}
+
+
+def _matrix(tmp_path, q=None, word=None):
+    cmap = [_col(f"M_{i}", "QM", "M", _SCALE, "Likert", "Matrix", sub=sub)
+            for i, sub in enumerate(["Speed", "Cost"], start=1)]
+    rows = [{"R": "1", "M_1": "1", "M_2": "3"}, {"R": "2", "M_1": "3", "M_2": "3"},
+            {"R": "3", "M_1": "1", "M_2": ""}, {"R": "4", "M_1": "2", "M_2": "1"}]
+    return _run(tmp_path, {"QM": q or {}}, rows, cmap, word)
+
+
+def test_rating_matrix_is_a_grid_of_items_by_scale_points(tmp_path) -> None:
+    out = _matrix(tmp_path, {"include_missing": True, "response_total": "after"})
+    rows = _table_text(_doc(out).tables[0])
+    # Scale points in survey order, then Total and Missing as columns.
+    assert rows[0] == ["Item", "Low\n(1)", "Medium\n(2)", "High\n(3)", "Total", "Missing"]
+    assert rows[1] == ["Speed", "2\n50.00%", "1\n25.00%", "1\n25.00%", "4\n100.00%", "0\n0.00%"]
+    assert rows[2] == ["Cost", "1\n25.00%", "—", "2\n50.00%", "3\n75.00%", "1\n25.00%"]
+
+
+def test_matrix_grid_gets_a_valid_n_column_on_the_valid_base(tmp_path) -> None:
+    out = _matrix(tmp_path, {"percent_base": "valid", "show_code": False})
+    rows = _table_text(_doc(out).tables[0])
+    assert rows[0] == ["Item", "Low", "Medium", "High", "Valid n"]
+    assert [r[-1] for r in rows[1:]] == ["4", "3"]
+
+
+def test_matrix_list_layout_is_still_available(tmp_path) -> None:
+    out = _matrix(tmp_path, word={"matrices": {"layout": "list"}})
+    head = _table_text(_doc(out).tables[0])[0]
+    assert head[:3] == ["Attribute", "Code", "Response"]
+
+
+def _borders(table) -> dict:
+    from docx.oxml.ns import qn
+
+    el = table._tbl.tblPr.find(qn("w:tblBorders"))
+    return {child.tag.split("}")[1]: child.get(qn("w:val")) for child in el}
+
+
+def test_corporate_theme_has_no_column_lines(tmp_path) -> None:
+    b = _borders(_doc(_basic(tmp_path)).tables[0])
+    assert b["top"] == "single" and b["insideH"] == "single"
+    assert b["insideV"] == "nil"
+
+
+def test_grid_and_minimal_themes(tmp_path) -> None:
+    (tmp_path / "g").mkdir()
+    (tmp_path / "m").mkdir()
+    grid = _borders(_doc(_basic(tmp_path / "g", word={"tables": {"theme": "grid"}})).tables[0])
+    assert grid["insideV"] == "single"
+    minimal = _borders(_doc(_basic(tmp_path / "m", word={"tables": {"theme": "minimal"}})).tables[0])
+    assert minimal["top"] == "nil" and minimal["insideH"] == "single"
+
+
+def test_new_style_options_are_validated() -> None:
+    assert validate_style({"tables": {"theme": "boxed", "spacing": "spacious",
+                                      "value_align": "right", "cell_padding_inches": None},
+                           "matrices": {"layout": "list", "max_columns": 7}}) == []
+    errors = validate_style({"tables": {"theme": "fancy", "spacing": "roomy"},
+                             "matrices": {"layout": "table", "max_columns": 2.5}})
+    assert {e.split(":")[0] for e in errors} == {
+        "word.tables.theme", "word.tables.spacing", "word.matrices.layout", "word.matrices.max_columns"}
