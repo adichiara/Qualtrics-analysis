@@ -147,14 +147,74 @@ multi-select. Warnings (advisory) cover question keys not present in the column 
 options placed on a table spec that are only honored at the question level. Warnings are
 also recorded in `frequency_manifest.json` under `config_warnings`.
 
+## Word report (`report.docx`)
+
+The frequency stage also writes `report.docx` beside `report.html`: the same
+tables as an editable Word document, for the write-up. It reads the same CSVs and
+manifest and lays them out with the same code as the HTML report, so every table
+option in the config — `stats`, `show_code`, `hide_codes`, `response_total`,
+`overall`, `orientation`, `pct_decimals`, `include_missing`, row order — means the
+same thing in both. What you settle on in the browser and paste into the config is
+what the Word document shows on the next run.
+
+To regenerate it from an existing run directory (or use "Regenerate reports" in the
+interactive menu):
+
+```bash
+python -m qualtrics_pipeline.word_report --run-dir runs/<run>
+python -m qualtrics_pipeline.word_report --run-dir runs/<run> --out tables.docx --style style.json
+```
+
+Layout:
+
+- Each question gets a heading (its export tag and text), then its table, then a
+  caption naming the percentage base. Its crosstabs follow under "By <question>"
+  sub-headings, and write-in responses follow in their own Response/Count table.
+- Header rows are shaded and repeat on a new page; body rows are banded and never
+  split across a page; a short table stays on one page with its heading.
+- The Total row is bold with a rule above it; the Missing row is italic and last.
+- A select-all question lists its options as the responses, rather than repeating
+  "Selected" on every row.
+- A crosstab too wide for the page is split into parts that each fit, with the
+  response columns repeated. Its group headings turn sideways when there are many
+  groups or a heading would not fit its column.
+
+The document's look is set by a `"word"` block in the frequency config (validated
+with the rest of it), or a `--style` JSON file of the same shape, which overrides it.
+Every setting is optional:
+
+```jsonc
+"word": {
+  "document": { "title": null, "subtitle": true, "notes": true },    // title null -> survey name
+  "fonts": { "family": "Arial", "title_size": 17, "question_size": 11,
+             "table_size": 9, "caption_size": 8.5 },
+  "page": { "paper_size": "letter", "orientation": "portrait",       // letter | a4 | legal
+            "margin_top_inches": 0.75, "margin_bottom_inches": 0.75,
+            "margin_left_inches": 0.8, "margin_right_inches": 0.8 },
+  "questions": { "numbering": "survey",   // survey (Q1.5) | sequential | off
+                 "bold": true, "page_break_before": false, "show_base": true,
+                 "space_before_pt": 14 },
+  "tables": { "header_color": "#EAEAEA", "banded_rows": true, "band_color": "#F7F7F7",
+              "borders": { "enabled": true, "weight_pt": 0.5, "color": "#BFBFBF" },
+              "cell_padding_inches": 0.04, "stat_column_width_inches": 0.8,
+              "code_column_width_inches": 0.5, "attribute_column_width_inches": null,
+              "min_group_column_width_inches": 0.55, "keep_together_max_rows": 30 },
+  "crosstabs": { "header_rotation": "auto", "rotate_at_columns": 8 },  // auto | always | never
+  "write_ins": { "show": true, "max_rows": null }
+}
+```
+
+The table styling follows the conventions of the
+[Qualtrics document generator](https://github.com/adichiara/Qualtrics-document-generator).
+
 ## HTML validation report
 
 The frequency stage emits `report.html` in the output directory automatically. It
 renders every question's frequency table into one self-contained HTML page —
 questions in natural survey order, with each response's Count and percentages,
 and a badge on questions gated by display logic — so the computed values can be
-checked for accuracy. (The presentation-quality MS Word output is produced
-separately; this report is a validation aid.)
+checked for accuracy, and formatting options tried out live. (`report.docx`, above,
+is the presentation copy.)
 
 To (re)generate it from an existing run directory:
 

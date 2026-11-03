@@ -904,6 +904,8 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
             if tables.get(slug) and meta.get("missing_rows")
         },
         "output_files": [str(p) for p in outs],
+        # Word document style, passed through for the Word renderer (validated above).
+        "word_style": config.get("word") or {},
     }
     (outdir / "frequency_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -912,6 +914,10 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
 
     report_path = generate_html_report(outdir)
     outs.append(report_path)
+
+    from .word_report import generate_word_report
+
+    outs.append(generate_word_report(outdir))
     return outs
 
 
