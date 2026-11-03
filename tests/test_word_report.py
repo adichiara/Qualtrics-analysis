@@ -265,3 +265,68 @@ def test_new_style_options_are_validated() -> None:
                              "matrices": {"layout": "table", "max_columns": 2.5}})
     assert {e.split(":")[0] for e in errors} == {
         "word.tables.theme", "word.tables.spacing", "word.matrices.layout", "word.matrices.max_columns"}
+
+
+# ---------------------------------------------------------------------------
+# Matrix headers: horizontal (default) or sideways, scale columns equal width
+# ---------------------------------------------------------------------------
+
+_SEVEN = {"1": "Very Dissatisfied", "2": "Moderately Dissatisfied", "3": "Slightly Dissatisfied",
+          "4": "Neither", "5": "Slightly Satisfied", "6": "Moderately Satisfied", "7": "Very Satisfied"}
+
+
+def _seven_point(tmp_path, word=None):
+    cmap = [_col(f"M_{i}", "QM", "M", _SEVEN, "Likert", "Matrix", sub=sub)
+            for i, sub in enumerate(["Comfort", "Durability"], start=1)]
+    rows = [{"R": str(r), "M_1": str(r % 7 + 1), "M_2": str((r * 3) % 7 + 1) if r % 5 else ""}
+            for r in range(35)]
+    q = {"QM": {"include_missing": True, "response_total": "after", "sort_by": "survey_order"}}
+    return _run(tmp_path, q, rows, cmap, word)
+
+
+def _is_rotated(cell) -> bool:
+    from docx.oxml.ns import qn
+
+    return cell._tc.get_or_add_tcPr().find(qn("w:textDirection")) is not None
+
+
+def test_matrix_headers_are_horizontal_with_equal_scale_columns(tmp_path) -> None:
+    doc = _doc(_seven_point(tmp_path))
+    assert len(doc.tables) == 1  # fits on one table: no parts
+    head = doc.tables[0].rows[0].cells
+    assert not any(_is_rotated(c) for c in head)
+    scale_widths = {round(c.width.inches, 3) for c in head[1:8]}
+    assert len(scale_widths) == 1  # every scale point the same width
+    # Long labels carry soft hyphens so Word breaks them once, cleanly;
+    # Total and Missing are never hyphenated.
+    assert "­" in head[2].text
+    assert [head[8].text, head[9].text] == ["Total", "Missing"]
+
+
+def test_matrix_headers_sideways_on_request(tmp_path) -> None:
+    doc = _doc(_seven_point(tmp_path, word={"matrices": {"header_rotation": "always"}}))
+    head = doc.tables[0].rows[0].cells
+    assert all(_is_rotated(c) for c in head[1:])
+    assert len({round(c.width.inches, 3) for c in head[1:8]}) == 1
+
+
+def test_numeric_scale_labels_still_make_a_grid(tmp_path) -> None:
+    labels = {str(i): str(i) for i in range(1, 6)}
+    cmap = [_col("N_1", "QN", "N", labels, "Likert", "Matrix", sub="Speed"),
+            _col("N_2", "QN", "N", labels, "Likert", "Matrix", sub="Cost")]
+    rows = [{"R": "1", "N_1": "1", "N_2": "5"}, {"R": "2", "N_1": "3", "N_2": "4"}]
+    out = _run(tmp_path, {"QN": {"sort_by": "survey_order"}}, rows, cmap)
+    assert _table_text(_doc(out).tables[0])[0] == ["Item", "1", "2", "3", "4", "5"]
+
+
+def test_hyphenation_breaks_at_syllables() -> None:
+    from qualtrics_pipeline.word_report import _hyphenate
+
+    def shown(w):
+        return _hyphenate(w, 9, 0).replace("­", "-")
+
+    assert shown("Dissatisfied") == "Dis-satis-fied"
+    assert shown("disagree") == "dis-agree"
+    assert shown("Neither") == "Nei-ther"
+    # A word that fits is left alone.
+    assert _hyphenate("Dissatisfied", 9, 5.0) == "Dissatisfied"
