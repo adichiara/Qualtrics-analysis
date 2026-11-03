@@ -106,12 +106,18 @@ DEFAULT_STYLE: dict[str, Any] = {
         #       appears in the survey); list: one row per item x answer.
         "layout": "grid",
         "max_columns": 12,         # more distinct answers than this -> list
-        # Scale-point headers: never = horizontal, wrapped at word breaks (the
-        # header font shrinks toward header_min_size before anything else
-        # gives); always = sideways; auto = horizontal when it fits, else sideways.
+        # Scale-point headers: never = horizontal, wrapped between words (the item
+        # column narrows, then the header font shrinks toward header_min_size,
+        # before anything else gives); always = sideways; auto = horizontal when
+        # it fits, else sideways.
         "header_rotation": "never",
         "header_min_size": 7,
+        "item_min_width_inches": 0.9,    # the item column narrows no further
         "max_column_width_inches": 1.1,  # scale columns stop widening here
+        # Where an include_missing count goes: column; note = a line under the
+        # table; auto = a column unless that makes the grid squeeze its headers
+        # or split.
+        "missing": "auto",
     },
     "write_ins": {
         "show": True,
@@ -136,6 +142,7 @@ _ENUMS = {
     "spacing": set(_SPACING),
     "value_align": {"center", "right"},
     "layout": {"grid", "list"},
+    "missing": {"auto", "column", "note"},
     "paper_size": {"letter", "a4", "legal"},
     "orientation": {"portrait", "landscape"},
     "numbering": {"survey", "sequential", "off"},
@@ -280,103 +287,10 @@ _ARIAL_EM = {
     ".": 0.278, ",": 0.278, "%": 0.889, " ": 0.278, "-": 0.333, "(": 0.333, ")": 0.333,
     "/": 0.278, ":": 0.278, "'": 0.191, "&": 0.667,
 }
-_SOFT_HYPHEN = "\u00ad"
-_VOWELS = set("aeiouyAEIOUY")
-
-
 def _text_width_in(text: str, size: float, bold: bool = False) -> float:
     """Approximate Arial width in inches -- enough to size columns and headers."""
-    em = sum(_ARIAL_EM.get(ch, 0.6) for ch in text if ch != _SOFT_HYPHEN)
+    em = sum(_ARIAL_EM.get(ch, 0.6) for ch in text)
     return em * size * (1.06 if bold else 1.0) / 72
-
-
-# Consonant pairs that start a syllable together, so "disa-gree" not "disag-ree".
-_ONSETS = {"bl", "br", "ch", "cl", "cr", "dr", "fl", "fr", "gl", "gr", "ph", "pl", "pr",
-           "sc", "sh", "sk", "sl", "sm", "sn", "sp", "st", "sw", "th", "tr", "tw", "wh", "wr"}
-_PREFIXES = ("under", "over", "dis", "mis", "non", "pre", "un", "in", "im", "re")
-_SUFFIXES = ("ment", "ness", "less", "able", "ible", "tion", "sion", "ful", "ly")
-
-
-def _syllable_breaks(word: str) -> list[int]:
-    """Positions where ``word`` may be hyphenated -- a rough English rule, enough
-    for scale labels: after a common prefix (dis-agree), before a common suffix
-    (extreme-ly), and between vowels split by consonants (sat-is-fied), keeping
-    consonant pairs that start a syllable together (dis-a-gree). Leaves at least
-    three letters before a break and two after."""
-    lower = word.lower()
-    n = len(word)
-    breaks: set[int] = set()
-    for pre in _PREFIXES:
-        if lower.startswith(pre) and n - len(pre) >= 4:
-            breaks.add(len(pre))
-            break
-    for suf in _SUFFIXES:
-        if lower.endswith(suf) and n - len(suf) >= 4:
-            breaks.add(n - len(suf))
-            break
-    i = 1
-    while i < n:
-        if lower[i - 1] in _VOWELS and lower[i] not in _VOWELS:
-            j = i
-            while j < n and lower[j] not in _VOWELS:
-                j += 1
-            if j < n:  # consonants lower[i:j] sit between two vowels
-                run = lower[i:j]
-                if len(run) == 1:
-                    breaks.add(i)                    # sa-tis
-                elif run[-2:] in _ONSETS:
-                    breaks.add(j - 2)                # dis-a-gree, nei-ther
-                else:
-                    breaks.add(j - 1)                # dis-sat
-            i = j
-        else:
-            i += 1
-    # No fragment shorter than three letters (the last may be two): "dis-agree",
-    # not "dis-a-gree".
-    kept, last = [], 0
-    for b in sorted(breaks):
-        if b - last >= 3 and n - b >= 2 and word[b - 1].isalpha() and word[b].isalpha():
-            kept.append(b)
-            last = b
-    return kept
-
-
-def _hyphenate(text: str, size: float, max_width: float) -> str:
-    """Put soft hyphens into any word too wide for ``max_width`` inches. Word
-    shows a soft hyphen only where it actually breaks the line, so a word that
-    fits is untouched either way."""
-    out = []
-    for word in text.split(" "):
-        if _text_width_in(word, size, True) > max_width:
-            pieces, last = [], 0
-            for b in _syllable_breaks(word):
-                pieces.append(word[last:b])
-                last = b
-            pieces.append(word[last:])
-            word = _SOFT_HYPHEN.join(pieces)
-        out.append(word)
-    return " ".join(out)
-
-
-def _two_line_width(word: str, size: float) -> float:
-    """Narrowest a word can be made by breaking it once, at a syllable break
-    ("Dissatis-" over "fied"), so a hyphenated header never runs to three lines."""
-    best = _text_width_in(word, size, True)
-    for b in _syllable_breaks(word):
-        best = min(best, max(_text_width_in(word[:b] + "-", size, True),
-                             _text_width_in(word[b:], size, True)))
-    return best
-
-
-def _widest_piece(text: str, size: float) -> float:
-    """Width of the widest unbreakable piece of ``text`` (a word, or with soft
-    hyphens a syllable run plus its hyphen)."""
-    widest = 0.0
-    for word in text.split():
-        parts = word.split(_SOFT_HYPHEN)
-        for i, part in enumerate(parts):
-            widest = max(widest, _text_width_in(part + ("-" if i < len(parts) - 1 else ""), size, True))
-    return widest
 
 
 # ---------------------------------------------------------------------------
@@ -786,8 +700,6 @@ class _Writer:
         if total_pos:
             total = ("Total", "total", "")
             columns = [total, *columns] if total_pos == "before" else [*columns, total]
-        if missing:
-            columns.append((_MISSING_LABEL, "missing", ""))
         if base == "valid":
             # Valid n differs item by item, so it gets a column of its own.
             columns.append(("Valid n", "base", ""))
@@ -802,24 +714,41 @@ class _Writer:
                 return self._stacked(missing.get(item), stats, base, dec)
             return str(by_item[item][0].get("valid_n", ""))
 
-        grid = {item: [text_for(item, k, key) for _h, k, key in columns] for item in items}
-        # Each column as wide as its widest value, so only the Total column
-        # pays for "100.00%"; the item column gives way (down to 1.3") before
-        # the grid is split into parts.
-        needs = [self._needed_width([grid[item][j] for item in items], kind == "total")
-                 for j, (_h, kind, _k) in enumerate(columns)]
-        item_w, widths, panels, rotate, head_size, hyph = self._matrix_geometry(columns, needs)
-        text_room = {j: w - self._padding()[1] * 2 - 0.04 for j, w in widths.items()}
+        def geometry(cols_: list[tuple[str, str, str]]):
+            grid_ = {item: [text_for(item, k, key) for _h, k, key in cols_] for item in items}
+            # Each column as wide as its widest value, so only the Total column
+            # pays for "100.0%".
+            needs = [self._needed_width([grid_[item][j] for item in items], kind == "total")
+                     for j, (_h, kind, _k) in enumerate(cols_)]
+            return grid_, self._matrix_geometry(cols_, needs)
+
+        # Missing goes last (before Valid n) as a column -- or, if that is what
+        # makes the grid squeeze its headers or split, into a note under it.
+        policy = self.style["matrices"]["missing"]
+        missing_col = (_MISSING_LABEL, "missing", "")
+        with_missing = [*columns[:-1], missing_col, columns[-1]] if base == "valid" \
+            else [*columns, missing_col]
+        missing_note = False
+        if missing and policy == "note":
+            missing_note = True
+        elif missing and policy == "auto":
+            grid, geo = geometry(with_missing)
+            _g, alt = geometry(columns)
+            # Better = fewer parts, then a larger header font, then horizontal.
+            if (len(alt[2]), -alt[4], alt[3]) < (len(geo[2]), -geo[4], geo[3]):
+                missing_note = True
+            else:
+                columns = with_missing
+        elif missing:
+            columns = with_missing
+        grid, (item_w, widths, panels, rotate, head_size) = geometry(columns)
         size = self.style["fonts"]["table_size"]
         for p_i, cols in enumerate(panels):
             sub = [columns[j] for j in cols]
             doc_table = self._new_table(len(items) + 1, [item_w] + [widths[j] for j in cols])
             self._set(doc_table.rows[0].cells[0], "Item", bold=True)
             for j, col in enumerate(cols, start=1):
-                head = columns[col][0]
-                if hyph and columns[col][1] == "response":
-                    head = _hyphenate(head, head_size, text_room[col])
-                self._header_cell(doc_table.rows[0].cells[j], head, rotate, head_size)
+                self._header_cell(doc_table.rows[0].cells[j], columns[col][0], rotate, head_size)
             for i, item in enumerate(items, start=1):
                 cells = doc_table.rows[i].cells
                 self._set(cells[0], item)
@@ -840,12 +769,18 @@ class _Writer:
         if lay["hidden"]:
             parts.append(f"{lay['hidden']} response{'s' if lay['hidden'] != 1 else ''} hidden")
         self._caption(" \u00b7 ".join(parts), space_before=2)
+        if missing_note:
+            def one(item: str) -> str:
+                row = missing.get(item)
+                if row is None:
+                    return f"{item} \u2014"
+                pct = _stat_text(row, "pct", base, dec)
+                return f"{item} {row.get('n', '')}" + (f" ({pct})" if pct else "")
+            self._caption("Missing (shown the question, no answer): " +
+                          "; ".join(one(item) for item in items), space_before=0)
 
-    def _longest_word(self, headers: list[str], size: float, hyphenate: bool = False) -> float:
-        """Narrowest column (text only) the headers fit in without breaking a
-        word -- or, with ``hyphenate``, without breaking a syllable."""
-        if hyphenate:
-            return max((_two_line_width(w, size) for h in headers for w in h.split()), default=0.0)
+    def _longest_word(self, headers: list[str], size: float) -> float:
+        """Narrowest column (text only) the headers fit in without breaking a word."""
         return max((_text_width_in(w, size, True) for h in headers for w in h.split()), default=0.0)
 
     def _matrix_geometry(self, columns: list[tuple[str, str, str]], needs: list[float]):
@@ -853,12 +788,11 @@ class _Writer:
 
         Scale-point columns all get one width, so a rating scale reads evenly;
         Total / Missing / Valid n are sized to what they hold. Horizontal
-        headers wrap at word breaks, so a column must fit its longest word. In
-        order, until it fits: the item column narrows (to 1.3"), the header font
-        shrinks (to header_min_size), long words are hyphenated at syllable
-        breaks (from the full size down again) -- and only then does the grid
-        turn its headers sideways ("auto") or split into parts ("never").
-        Returns (item_w, {col: width}, panels, rotate, header size, hyphenate).
+        headers wrap only between words, so a column must fit its longest word.
+        In order, until it fits: the item column narrows (to
+        item_min_width_inches), the header font shrinks (to header_min_size) --
+        and only then does the grid turn its headers sideways ("auto") or split
+        into parts ("never").
         """
         mx, t = self.style["matrices"], self.style["tables"]
         table_size = self.style["fonts"]["table_size"]
@@ -869,15 +803,18 @@ class _Writer:
         others = [j for j in range(len(columns)) if j not in scale]
         heads = [columns[j][0] for j in scale]
         scale_need = max((needs[j] for j in scale), default=0.0)
-        item_min = t["attribute_column_width_inches"] or 1.3
-        item_pref = t["attribute_column_width_inches"] or max(1.3, min(3.0, self.width * 0.35))
+        fixed_item = t["attribute_column_width_inches"]
+        item_min = fixed_item or min(mx["item_min_width_inches"], self.width / 3)
+        item_pref = fixed_item or max(item_min, min(3.0, self.width * 0.35))
 
-        def plan(horizontal: bool, header_size: float, hyph: bool = False):
-            """Widths when every scale column fits ``w_req``; None if they cannot."""
-            # Only scale-point labels are ever hyphenated; "Missing" stays whole.
-            other_w = {j: max(needs[j], (self._longest_word([columns[j][0]], header_size) + pad)
-                              if horizontal else 0.0) for j in others}
-            w_req = max(scale_need, self._longest_word(heads, header_size, hyph) + pad) if horizontal \
+        def other_widths(horizontal: bool, header_size: float) -> dict[int, float]:
+            return {j: max(needs[j], (self._longest_word([columns[j][0]], header_size) + pad)
+                           if horizontal else 0.0) for j in others}
+
+        def plan(horizontal: bool, header_size: float):
+            """Widths when every scale column fits its longest word; None if not."""
+            other_w = other_widths(horizontal, header_size)
+            w_req = max(scale_need, self._longest_word(heads, header_size) + pad) if horizontal \
                 else scale_need
             fixed = sum(other_w.values())
             n = max(len(scale), 1)
@@ -887,40 +824,35 @@ class _Writer:
                 return None
             w = min(w, max(cap, w_req))
             # Room left once the scale columns stop widening goes to the item column.
-            item_w = max(item_w, min(3.0, self.width - fixed - n * w)) if not \
-                t["attribute_column_width_inches"] else item_w
-            widths = {**dict.fromkeys(scale, w), **other_w}
-            return item_w, widths
+            if not fixed_item:
+                item_w = max(item_w, min(3.0, self.width - fixed - n * w))
+            return item_w, {**dict.fromkeys(scale, w), **other_w}
 
         mode = mx["header_rotation"]
         whole = [list(range(len(columns)))]
         if mode != "always":
-            for hyph in (False, True):
-                size = table_size
-                while size >= min_size:
-                    fitted = plan(True, size, hyph)
-                    if fitted:
-                        item_w, widths = fitted
-                        return item_w, widths, whole, False, size, hyph
-                    size -= 0.5
+            size = table_size
+            while size >= min_size - 1e-6:
+                fitted = plan(True, size)
+                if fitted:
+                    return fitted[0], fitted[1], whole, False, size
+                size -= 0.5
         if mode != "never":
             fitted = plan(False, table_size)
             if fitted:
-                item_w, widths = fitted
-                return item_w, widths, whole, True, table_size, False
+                return fitted[0], fitted[1], whole, True, table_size
         # Too many columns for one table even at the smallest setting: split into
         # parts, keeping one width for every scale column.
         horizontal = mode == "never"
-        w_req = max(scale_need, self._longest_word(heads, min_size, True) + pad) if horizontal \
-            else scale_need
-        col_need = [w_req if j in scale else max(
-            needs[j], (self._longest_word([columns[j][0]], min_size) + pad) if horizontal else 0.0)
-            for j in range(len(columns))]
+        size = min_size if horizontal else table_size
+        w_req = max(scale_need, self._longest_word(heads, size) + pad) if horizontal else scale_need
+        other_w = other_widths(horizontal, size)
+        col_need = [w_req if j in scale else other_w[j] for j in range(len(columns))]
         room = self.width - item_min
         panels = self._fit(col_need, room)
         widths = {j: w for cols in panels
                   for j, w in zip(cols, self._spread([col_need[j] for j in cols], room, cap), strict=True)}
-        return item_min, widths, panels, not horizontal, min_size if horizontal else table_size, horizontal
+        return item_min, widths, panels, not horizontal, size
 
     def _needed_width(self, texts: list[str], bold: bool = False) -> float:
         """Width a value column needs to show every one of ``texts`` unwrapped."""
