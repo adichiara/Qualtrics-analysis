@@ -178,11 +178,14 @@ Layout:
 - A rating matrix is a grid, as it appears in the survey: one row per item, one
   column per defined scale point (in survey order, including points nobody chose),
   with Total and Missing as columns and a Valid n column when Valid is the base.
-  The scale columns all get the same width. Their labels are horizontal by default,
-  wrapping at word breaks; when a label word will not fit, the item column narrows,
-  then the header font shrinks (to `header_min_size`), then long words are
-  hyphenated once at a syllable ("Dissatis-/fied") — and only then is the grid
-  split into parts. `"header_rotation": "always"` turns the labels sideways instead,
+  The scale columns all get the same width. Their labels are horizontal by default
+  and wrap only between words — never mid-word. When a label word will not fit,
+  the item column narrows (to `item_min_width_inches`), then the header font
+  shrinks (to `header_min_size`), and only then is the grid split into parts.
+  With `include_missing`, the Missing counts take a column when there is room;
+  when the column is what would squeeze the headers or split the grid, they go
+  in a line under the table instead (`"missing": "auto"`; or force `"column"` /
+  `"note"`). `"header_rotation": "always"` turns the labels sideways instead,
   and `"auto"` keeps them horizontal when they fit and turns them when not.
   `"matrices": {"layout": "list"}` gives the long item × answer list instead.
 - The Total row is bold with a rule above it; the Missing row is italic and last.
@@ -223,6 +226,8 @@ Every setting is optional:
                 "max_columns": 12,           // more scale points than this -> list
                 "header_rotation": "never",  // never (horizontal) | auto | always (sideways)
                 "header_min_size": 7,        // smallest header font when fitting labels
+                "item_min_width_inches": 0.9,  // the item column narrows no further
+                "missing": "auto",           // auto | column | note (a line under the table)
                 "max_column_width_inches": 1.1 },
   "write_ins": { "show": true, "max_rows": null }
 }
@@ -542,5 +547,6 @@ computed and stored. The resolved options are written to `frequency_manifest.jso
 `total_pct`, plus `pct` and `base_n` (aliases for the featured `report_base`'s percent and
 count). `n` is the response count, shown as **Count** in the report (the key stays `n`
 in the config and CSV so existing configs keep working). When unset, both flat tables
-and crosstab cells show Count + the featured percent. `orientation`, `overall`, and `response_total` apply to grouped
+and crosstab cells show Count + the featured percent. Percentages show one decimal place unless a
+table sets `pct_decimals` (0–6). `orientation`, `overall`, and `response_total` apply to grouped
 tables; `overall` requires the question's ungrouped table to also be produced.

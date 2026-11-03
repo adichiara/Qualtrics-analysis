@@ -84,7 +84,7 @@ def test_generate_report_renders_values_and_conditional_badge(tmp_path) -> None:
     assert html.startswith("<!DOCTYPE html>")
     # Values rendered
     assert "Schofield" in html
-    assert "41.58%" in html
+    assert "41.6%" in html  # one decimal place by default
     assert ">42<" in html or "42" in html
     # Two question sections, indexed in survey order (Q1.5 before Q1.6)
     assert html.count("<section id=") == 2
@@ -160,7 +160,7 @@ def test_grouped_table_renders_as_crosstab(tmp_path) -> None:
     assert "Uniform A" in html and "Uniform B" in html
     assert "crosstab" in html
     assert "n=20" in html and "n=15" in html        # per-group base in header
-    assert "80.00%" in html                           # within-group cell pct (12/15)
+    assert "80.0%" in html                            # within-group cell pct (12/15)
     # Response options appear as rows.
     assert "Schofield" in html and "Fort Bragg" in html
 
@@ -384,7 +384,7 @@ def _render(tmp_path, rows, presentation) -> str:
 
 def test_pct_decimals_controls_displayed_precision(tmp_path) -> None:
     rows = _rebase_rows()
-    assert "60.00%" in _render(tmp_path, rows, {"stats": ["valid_pct"]})
+    assert "60.0%" in _render(tmp_path, rows, {"stats": ["valid_pct"]})  # default: 1
     assert "60%" in _render(tmp_path / "b", rows, {"stats": ["valid_pct"], "pct_decimals": 0})
     assert "60.0000%" in _render(tmp_path / "c", rows, {"stats": ["valid_pct"], "pct_decimals": 4})
 
@@ -399,9 +399,9 @@ def test_hidden_rows_rebase_valid_n_only(tmp_path) -> None:
     })
     assert "N/A" not in table                 # row is gone
     assert ">90<" in table                    # valid_n 100 -> 90
-    assert "66.67%" in table and "33.33%" in table   # 60/90 and 30/90
-    assert "60.00%" in table and "30.00%" in table   # eligible % unchanged
-    assert "15.00%" in table                  # total % unchanged
+    assert "66.7%" in table and "33.3%" in table     # 60/90 and 30/90
+    assert "60.0%" in table and "30.0%" in table     # eligible % unchanged
+    assert "15.0%" in table                   # total % unchanged
 
 
 def test_hidden_rows_skip_rebase_for_multi_select(tmp_path) -> None:
@@ -755,7 +755,7 @@ def test_missing_row_rendered_last_with_blank_valid_pct(tmp_path) -> None:
     last = rows[-1]
     assert "<em>Missing</em>" in last
     # Count, then a blank Valid %, then Eligible %.
-    assert '<td class="num">7</td><td class="num"></td><td class="num">6.48%</td>' in last
+    assert '<td class="num">7</td><td class="num"></td><td class="num">6.5%</td>' in last
     # The Total above it sums the responses only: 42 + 59.
     assert "<strong>Total</strong>" in rows[-2] and '<td class="num">101</td>' in rows[-2]
 
