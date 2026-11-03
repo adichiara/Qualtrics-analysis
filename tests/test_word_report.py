@@ -337,3 +337,68 @@ def test_numeric_scale_labels_still_make_a_grid(tmp_path) -> None:
     rows = [{"R": "1", "N_1": "1", "N_2": "5"}, {"R": "2", "N_1": "3", "N_2": "4"}]
     out = _run(tmp_path, {"QN": {"sort_by": "survey_order"}}, rows, cmap)
     assert _table_text(_doc(out).tables[0])[0] == ["Item", "1", "2", "3", "4", "5"]
+
+
+# ---------------------------------------------------------------------------
+# A matrix that cannot fit one grid becomes one table per item (never split)
+# ---------------------------------------------------------------------------
+
+def _eleven_point(tmp_path, q=None, word=None):
+    labels = {str(i): str(i) for i in range(11)}
+    labels["0"], labels["10"] = "Not at all likely", "Extremely likely"
+    cmap = [_col(f"L_{i}", "QL", "L", labels, "Likert", "Matrix", sub=sub)
+            for i, sub in enumerate(["Comfort", "Durability"], start=1)]
+    rows = [{"R": str(r), "L_1": str(r % 11), "L_2": str((r * 7) % 11) if r % 6 else ""}
+            for r in range(44)]
+    cfg = {"include_missing": True, "response_total": "after", "sort_by": "survey_order", **(q or {})}
+    return _run(tmp_path, {"QL": cfg}, rows, cmap, word)
+
+
+def test_too_wide_matrix_becomes_one_vertical_table_per_item(tmp_path) -> None:
+    doc = _doc(_eleven_point(tmp_path))
+    assert len(doc.tables) == 2  # one per item, no "(continued)" parts
+    assert not any("(continued)" in p.text for p in doc.paragraphs)
+    texts = [p.text for p in doc.paragraphs]
+    assert "Comfort" in texts and "Durability" in texts  # an item sub-heading each
+    rows = _table_text(doc.tables[1])
+    assert rows[0] == ["Code", "Response", "Count", "Eligible %"]
+    assert [r[1] for r in rows[-2:]] == ["Total", "Missing"]
+
+
+def test_items_layout_can_be_chosen(tmp_path) -> None:
+    out = _matrix(tmp_path, word={"matrices": {"layout": "items"}})
+    doc = _doc(out)
+    assert len(doc.tables) == 2
+    assert _table_text(doc.tables[0])[0][:2] == ["Code", "Response"]
+
+
+def test_a_question_can_override_the_document_style(tmp_path) -> None:
+    # The document says grid; this one question asks for the long list.
+    out = _matrix(tmp_path, {"word": {"matrices": {"layout": "list"}}})
+    manifest = json.loads((out / "frequency_manifest.json").read_text())
+    assert manifest["table_word_style"]["QM"] == {"matrices": {"layout": "list"}}
+    head = _table_text(_doc(out).tables[0])[0]
+    assert head[:3] == ["Attribute", "Code", "Response"]
+
+
+def test_question_style_override_is_validated() -> None:
+    cmap = [_col("Q1", "QA", "Q1", {"1": "Yes"})]
+    issues = validate_config({"questions": {"QA": {"word": {
+        "page": {"orientation": "landscape"},
+        "matrices": {"layout": "sideways"},
+    }}}}, cmap)
+    where = {w for _lvl, w, _m in issues}
+    assert "questions.QA.word.page" in where           # document-wide only
+    assert "questions.QA.word.matrices.layout" in where
+    ok = validate_config({"questions": {"QA": {"word": {"matrices": {"layout": "items"}}}}}, cmap)
+    assert ok == []
+
+
+def test_html_report_carries_word_blocks_into_its_config_export(tmp_path) -> None:
+    out = _matrix(tmp_path, {"word": {"matrices": {"layout": "list"}}},
+                  word={"tables": {"theme": "grid"}})
+    html = (out / "report.html").read_text()
+    blob = json.loads(html.split('id="QM-data">')[1].split("</script>")[0])
+    assert blob["word"] == {"matrices": {"layout": "list"}}
+    constants = json.loads(html.split('id="rr-constants">')[1].split("</script>")[0])
+    assert constants["word_style"] == {"tables": {"theme": "grid"}}

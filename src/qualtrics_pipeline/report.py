@@ -234,7 +234,7 @@ def _apply_hidden(rows: list[dict], hide_codes: list[str]) -> list[dict]:
     return out
 
 
-def _constants_blob() -> str:
+def _constants_blob(word_style: dict | None = None) -> str:
     """Shared enums/labels/defaults for the in-browser JS, sourced from the
     same constants the Python renderers use so the two can't drift apart."""
     data = {
@@ -266,6 +266,8 @@ def _constants_blob() -> str:
         "n_field": _N_FIELD,
         "default_flat_stats": _DEFAULT_FLAT_STATS,
         "default_cell_stats": _DEFAULT_CELL_STATS,
+        # The config's top-level Word style, carried into the exported config.
+        "word_style": word_style or {},
     }
     return _json_script(data, "rr-constants")
 
@@ -1362,6 +1364,9 @@ function rrInit() {
     }
     var sc = sortConfig(sort, axis);
     for (var k in sc.keys) { cfg[k] = sc.keys[k]; }
+    // The Word document's style for this question: not a control here, but kept
+    // so the exported config still has it.
+    if (state.word && Object.keys(state.word).length) { cfg.word = state.word; }
     return { cfg: cfg, note: sc.note };
   }
   // Translate a browser sort into config keys. sort_by/response_order are
@@ -1394,7 +1399,7 @@ function rrInit() {
   var TABLE_KEYS = ["show_code", "orientation", "overall", "response_total",
                     "stats", "pct_decimals", "hide_codes"];
   var QUESTION_KEYS = ["include", "percent_base", "sort_by", "response_order",
-                       "include_empty_codes", "include_missing"];
+                       "include_empty_codes", "include_missing", "word"];
   function inList(v, list) { return list.indexOf(v) !== -1; }
   function readConfig(obj, kind) {
     var out = { values: {}, errors: [], ignored: [] };
@@ -1418,6 +1423,11 @@ function rrInit() {
           if (typeof v !== "boolean") { out.errors.push(key + " must be true or false"); break; }
           out.values.include_empty_codes = v;
           if (v) { out.ignored.push("include_empty_codes: zero-response rows are added when the CSV is written"); }
+          break;
+        case "word":
+          // Word document style: kept for the export, nothing to show here.
+          if (!v || typeof v !== "object" || Array.isArray(v)) { out.errors.push("word must be an object"); }
+          else { out.values.word = v; }
           break;
         case "include_missing":
           // Missing counts are always embedded, so this applies live either way.
@@ -1781,6 +1791,7 @@ function rrInit() {
       percent_base: effective.percent_base,
       include_empty_codes: effective.include_empty_codes,
       include_missing: effective.include_missing,
+      word: sdata.word || null,
       row_order: effective.row_order,
       response_order: [],
       include: true,
@@ -1909,6 +1920,7 @@ function rrInit() {
       percent_base: effective.percent_base,
       include_empty_codes: effective.include_empty_codes,
       include_missing: effective.include_missing,
+      word: sdata.word || null,
       row_order: effective.row_order,
       response_order: [],
       include: true,
@@ -2029,6 +2041,7 @@ function rrInit() {
     if (!questions || typeof questions !== "object") {
       return { applied: 0, errors: ['expected a "questions" object'], ignored: [] };
     }
+    if (obj.word && typeof obj.word === "object" && !Array.isArray(obj.word)) { reportWord = obj.word; }
     var byKey = {};
     configSections.forEach(function (sec) {
       (byKey[sec.qkey] = byKey[sec.qkey] || []).push(sec);
@@ -2061,6 +2074,7 @@ function rrInit() {
     return { applied: applied, errors: errors, ignored: ignored };
   }
 
+  var reportWord = constants.word_style || {};
   function buildReportConfig() {
     var questions = {};
     var order = [];
@@ -2088,7 +2102,9 @@ function rrInit() {
       if (specs.length) { block.tables = specs; }
       out[qkey] = block;
     });
-    return { questions: out };
+    var result = { questions: out };
+    if (reportWord && Object.keys(reportWord).length) { result.word = reportWord; }
+    return result;
   }
 
   // Report-level controls, wired after the sections so every setter is registered.
@@ -2353,6 +2369,7 @@ def _render_question_section(
     slug: str,
     universe: list[dict] | None = None,
     missing_rows: list[dict] | None = None,
+    word: dict | None = None,
 ) -> str:
     first = rows[0]
     question_id = first.get("question_id") or qkey
@@ -2433,6 +2450,9 @@ def _render_question_section(
             "universe": universe or [],
             # Eligible-but-blank counts; shown when include_missing is on.
             "missing": missing_rows or [],
+            # The question's Word style block: not used here, but carried into
+            # the exported config so a round trip does not drop it.
+            "word": word,
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -2459,6 +2479,7 @@ def _render_grouped_section(
     universe: list[dict] | None = None,
     missing_rows: list[dict] | None = None,
     overall_missing: list[dict] | None = None,
+    word: dict | None = None,
 ) -> str:
     """Pivot a long grouped frequency table into a wide crosstab.
 
@@ -2560,6 +2581,7 @@ def _render_grouped_section(
             # Eligible-but-blank counts; shown when include_missing is on.
             "missing": missing_rows or [],
             "overall_missing": overall_missing or [],
+            "word": word,
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -2603,6 +2625,7 @@ class RunTable:
     missing: list[dict] | None
     overall_rows: list[dict[str, str]] | None = None   # grouped tables only
     overall_missing: list[dict] | None = None          # grouped tables only
+    word: dict | None = None    # the question's Word style override, carried for export
 
 
 @dataclass
@@ -2635,6 +2658,7 @@ def load_run(run_dir: str | Path) -> RunData:
     freq_opts_map = manifest.get("table_frequency_opts") or {}
     universe_map = manifest.get("table_code_universe") or {}
     missing_map: dict[str, list[dict]] = dict(manifest.get("table_missing_rows") or {})
+    word_map = manifest.get("table_word_style") or {}
 
     # Overall (ungrouped) rows by question_key, for the optional Overall column.
     overall_by_qkey: dict[str, list[dict[str, str]]] = {}
@@ -2676,6 +2700,7 @@ def load_run(run_dir: str | Path) -> RunData:
             universe=universe_map.get(slug), missing=missing_map.get(slug),
             overall_rows=overall_by_qkey.get(qkey) if is_grouped else None,
             overall_missing=missing_map.get(qkey) if is_grouped else None,
+            word=word_map.get(slug) or None,
         )
         for _, slug, qkey, is_grouped, rows in blocks
     ]
@@ -2703,12 +2728,12 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     sections = "".join(
         _render_grouped_section(
             t.slug, t.rows, t.conditional, t.presentation,
-            t.overall_rows, t.universe, t.missing, t.overall_missing,
+            t.overall_rows, t.universe, t.missing, t.overall_missing, t.word,
         )
         if t.is_grouped
         else _render_question_section(
             t.qkey, t.rows, t.conditional, writeins.get(t.qkey, []), t.presentation, t.slug,
-            t.universe, t.missing,
+            t.universe, t.missing, t.word,
         )
         for t in run.tables
     )
@@ -2749,7 +2774,7 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         f'<div class="rr-tools" id="rr-global"></div>'
         f"<nav><h2>Questions</h2><ol>{index_items}</ol></nav>"
         f"{sections}{orphan}"
-        f"{_constants_blob()}"
+        f"{_constants_blob(run.manifest.get('word_style'))}"
         f"<script>{_SCRIPT}</script>"
         "</body></html>"
     )
