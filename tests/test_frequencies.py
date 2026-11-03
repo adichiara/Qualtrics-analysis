@@ -767,7 +767,7 @@ def test_include_empty_codes_is_stamped_into_the_manifest() -> None:
     _, meta = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS)], include_empty_codes=True)
     # sort_by is stamped resolved, so the report knows what order the rows are in.
     assert meta["table_specs"]["QSORT"]["frequency"] == {
-        "include_empty_codes": True, "sort_by": "count_desc",
+        "include_empty_codes": True, "include_missing": False, "sort_by": "count_desc",
     }
 
 
@@ -851,3 +851,109 @@ def test_manifest_carries_the_universe_and_the_resolved_sort_by(tmp_path) -> Non
     for opts in manifest["table_frequency_opts"].values():
         # Never "auto": the report has to know the order the rows are actually in.
         assert opts["sort_by"] in {"survey_order", "count_desc", "count_asc", "response_order"}
+
+
+# ---------------------------------------------------------------------------
+# include_missing: a "Missing" row for eligible respondents who left it blank
+# ---------------------------------------------------------------------------
+
+def _missing_rows(meta, slug="QSORT"):
+    return meta["table_specs"][slug]["missing_rows"]
+
+
+def test_missing_row_counts_eligible_non_answerers() -> None:
+    rows = [{"Q": "1"}, {"Q": "-99"}, {"Q": ""}, {"Q": " "}]
+    _, meta = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS)])
+    (m,) = _missing_rows(meta)
+    assert m["response_label"] == "Missing"
+    assert m["response_code"] == ""
+    assert m["row_type"] == "missing"
+    assert m["n"] == 2
+    assert m["valid_n"] == 2
+    # Valid % is meaningless for people outside the Valid base.
+    assert m["valid_pct"] == ""
+    assert m["eligible_pct"] == 50.0
+    assert m["total_pct"] == 50.0
+
+
+def test_missing_row_only_counts_respondents_shown_the_question() -> None:
+    rows = [
+        {"G": "1", "Q": "1"},
+        {"G": "1", "Q": ""},   # shown, skipped -> missing
+        {"G": "2", "Q": ""},   # never shown -> not missing
+        {"G": "2", "Q": ""},
+    ]
+    logic = {"QSORT": {"fully_evaluable": True,
+                       "tree": {"type": "pred", "column": "G", "op": "equals", "value": "1"}}}
+    config = {"defaults": {}, "questions": {"QSORT": {"include": True}}}
+    _, _, meta = generate_frequency_tables(rows, [_mc_col("Q", _SORT_LABELS)], config, display_logic=logic)
+    (m,) = _missing_rows(meta)
+    assert m["n"] == 1
+    assert m["eligible_n"] == 2
+    assert m["eligible_pct"] == 50.0
+    assert m["total_pct"] == 25.0
+
+
+def test_missing_rows_are_kept_out_of_the_response_rows() -> None:
+    rows = [{"Q": "1"}, {"Q": ""}]
+    tables, meta = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS)], include_missing=True)
+    assert all(r["row_type"] == "response" for r in tables["QSORT"])
+    assert meta["table_specs"]["QSORT"]["frequency"]["include_missing"] is True
+
+
+def test_missing_row_for_select_all_is_one_per_question() -> None:
+    rows = [{"Q_1": "1", "Q_2": ""}, {"Q_1": "", "Q_2": "1"}, {"Q_1": "", "Q_2": ""}]
+    cmap = [_multi_col("Q_1", "Boots"), _multi_col("Q_2", "Gloves")]
+    _, meta = _empty_codes_run(rows, cmap, qkey="QMULTI")
+    (m,) = _missing_rows(meta, "QMULTI")
+    assert m["n"] == 1          # picked nothing at all
+    assert m["valid_n"] == 2    # answered any option
+    assert m["attribute"] == ""
+
+
+def test_missing_row_per_matrix_attribute() -> None:
+    def col(c, sub):
+        return {**_mc_col(c, {"1": "Low", "2": "High"}, question_type="Matrix"), "sub_question_text": sub}
+    rows = [{"M_1": "1", "M_2": ""}, {"M_1": "", "M_2": ""}]
+    _, meta = _empty_codes_run(rows, [col("M_1", "Speed"), col("M_2", "Cost")])
+    by_attr = {m["attribute"]: m["n"] for m in _missing_rows(meta)}
+    assert by_attr == {"Speed": 1, "Cost": 2}
+
+
+def test_missing_rows_are_computed_within_each_group() -> None:
+    rows = [
+        {"G": "1", "Q": "1"}, {"G": "1", "Q": ""},
+        {"G": "2", "Q": "2"}, {"G": "2", "Q": "2"},
+    ]
+    cmap = [_mc_col("Q", _SORT_LABELS), {**_mc_col("G", {"1": "A", "2": "B"}), "qid": "QG",
+                                          "data_export_tag": "G", "parent_question_key": "QG"}]
+    config = {"defaults": {}, "questions": {"QSORT": {"tables": [{"group_by": ["G"]}]}}}
+    _, _, meta = generate_frequency_tables(rows, cmap, config)
+    missing = _missing_rows(meta, "QSORT__by__G")
+    assert {m["group_codes"]: m["n"] for m in missing} == {"1": 1, "2": 0}
+
+
+def test_missing_rows_reach_the_csv_only_when_asked(tmp_path) -> None:
+    data = tmp_path / "data.csv"
+    data.write_text("ResponseId,Q\nR1,1\nR2,\nR3,2\n", encoding="utf-8")
+    cmap_path = tmp_path / "column_map.json"
+    cmap_path.write_text(json.dumps([_mc_col("Q", _SORT_LABELS)]), encoding="utf-8")
+
+    def run(include_missing: bool):
+        cfg = tmp_path / f"cfg_{include_missing}.json"
+        cfg.write_text(json.dumps({"questions": {"QSORT": {"include_missing": include_missing}}}),
+                       encoding="utf-8")
+        out = tmp_path / f"out_{include_missing}"
+        run_frequency_analysis(data, cmap_path, out, cfg)
+        csv_text = (out / "frequency_tables" / "QSORT_frequencies.csv").read_text(encoding="utf-8")
+        manifest = json.loads((out / "frequency_manifest.json").read_text(encoding="utf-8"))
+        return csv_text, manifest
+
+    off_csv, off_manifest = run(False)
+    assert "Missing" not in off_csv
+    # Still recorded, so the report can switch the row on without a re-run.
+    assert off_manifest["table_missing_rows"]["QSORT"][0]["n"] == 1
+
+    on_csv, _ = run(True)
+    assert ",Missing,1," in on_csv
+    assert on_csv.splitlines()[0].count("row_type") == 1

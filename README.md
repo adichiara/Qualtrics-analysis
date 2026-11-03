@@ -151,7 +151,7 @@ also recorded in `frequency_manifest.json` under `config_warnings`.
 
 The frequency stage emits `report.html` in the output directory automatically. It
 renders every question's frequency table into one self-contained HTML page —
-questions in natural survey order, with `n`, `valid_n`, `valid_pct`, and `base_pct`,
+questions in natural survey order, with each response's Count and percentages,
 and a badge on questions gated by display logic — so the computed values can be
 checked for accuracy. (The presentation-quality MS Word output is produced
 separately; this report is a validation aid.)
@@ -270,7 +270,8 @@ Two kinds of key appear:
   in its matching `tables` entry for a grouped table. `report.py` applies these at
   render time, so regenerating the report is enough.
 - **Keys the frequencies stage owns** (`sort_by`, `response_order`,
-  `percent_base`, and `include_empty_codes`) always go in the question's block.
+  `percent_base`, `include_empty_codes`, and `include_missing`) always go in the
+  question's block.
   The report applies all of them in the browser too, so what you see is what the
   config says; **re-run the frequencies stage** when you want the CSVs themselves
   to match, since that is where these are stamped in.
@@ -326,6 +327,35 @@ rows already run in survey order, the block is rebuilt in that order, so a ratin
 scale keeps its scale. Under a count sort the zeros go last, which is where a
 count sort puts them anyway.
 
+## Missing rows (`include_missing`)
+
+A respondent who was shown a question but left it blank leaves no row in its
+frequency table — the only trace is the gap between Eligible n and Valid n. (A
+non-answer that Qualtrics *codes*, e.g. `-1`, is already a row of its own.) Set
+`include_missing: true` on a question to add a **Missing** row counting them:
+respondents eligible for the question (per its display logic) who did not answer.
+
+- **Count** is the number of eligible non-answerers; **Eligible %** and **Total %**
+  are computed as for any row.
+- **Valid %** is left blank: Valid n counts only those who answered, so a share of
+  it for people who did not answer means nothing.
+- The row is pinned at the bottom, after any Total row, and is **not** part of the
+  Total — the Total still sums the responses. Column sorts, hidden codes, and the
+  Valid-n rebase leave it alone.
+- A matrix question gets one Missing row per attribute (each row of the matrix is
+  answered separately). A select-all question gets one per question, counting
+  respondents who picked no option at all.
+- Grouped tables compute it within each group, and the Overall column uses the
+  ungrouped table's count.
+
+In the CSV the row has `response_label` = `Missing`, an empty `response_code`, and
+`row_type` = `missing` (every other row is `response`). It is written to the CSV only
+when `include_missing` is on, so the default CSV is unchanged for anything reading
+it. The counts are always recorded in `frequency_manifest.json` under
+`table_missing_rows`, though, so the report's **Missing row** checkbox (per table,
+plus **Missing rows** for the whole report) switches it on or off without a re-run.
+It is a question-level key, ignored on a `tables` entry.
+
 ## Percentage bases (computed up front)
 
 Every frequency-table row carries all three denominators so the report layer can
@@ -370,7 +400,7 @@ level of the grouping variable, so all three bases (valid/eligible/total) are
 within-group. Grouped output is written to `{qkey}__by__{group}_frequencies.csv` in long
 form (with `group_keys` / `group_codes` / `group_labels` columns); the HTML report pivots
 it into a wide crosstab (response options as rows, group levels as columns, cells showing
-n and the featured percentage).
+Count and the featured percentage).
 
 Notes:
 - Respondents missing the grouping variable's value are excluded from the grouped table;
@@ -403,6 +433,7 @@ computed and stored. The resolved options are written to `frequency_manifest.jso
 
 `stats` values: `n`, `valid_n`, `valid_pct`, `eligible_n`, `eligible_pct`, `total_n`,
 `total_pct`, plus `pct` and `base_n` (aliases for the featured `report_base`'s percent and
-count). When unset, flat tables show `n` + all three percents and crosstab cells show
-`n` + the featured percent. `orientation`, `overall`, and `response_total` apply to grouped
+count). `n` is the response count, shown as **Count** in the report (the key stays `n`
+in the config and CSV so existing configs keep working). When unset, both flat tables
+and crosstab cells show Count + the featured percent. `orientation`, `overall`, and `response_total` apply to grouped
 tables; `overall` requires the question's ungrouped table to also be produced.
