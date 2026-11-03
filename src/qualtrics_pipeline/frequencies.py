@@ -724,6 +724,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                     "dropped_missing": 0, "presentation": presentation,
                     "frequency": _stamp_frequency_opts(cfg, mappings),
                     "code_universe": _code_universe(mappings),
+                    "word": cfg.get("word") or {},
                 }
                 continue
 
@@ -766,6 +767,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                 "presentation": presentation,
                 "frequency": _stamp_frequency_opts(cfg, mappings),
                 "code_universe": _code_universe(mappings),
+                "word": cfg.get("word") or {},
             }
 
     return tables, text_outputs, {"table_specs": table_meta, "grouping_warnings": warnings}
@@ -898,6 +900,12 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
             slug: meta["code_universe"]
             for slug, meta in report_meta["table_specs"].items()
             if tables.get(slug) and meta["code_universe"]
+        },
+        # Per-question Word style overrides (a question's "word" block).
+        "table_word_style": {
+            slug: meta["word"]
+            for slug, meta in report_meta["table_specs"].items()
+            if tables.get(slug) and meta.get("word")
         },
         # Always present, so the report can toggle the Missing row without a re-run.
         "table_missing_rows": {

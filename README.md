@@ -2,6 +2,48 @@
 
 Pipeline for exporting Qualtrics survey data and generating frequency tables with an explicit data contract.
 
+## Quick start
+
+```bash
+pip install -e .
+qualtrics            # interactive menu: export -> config -> analysis -> reports
+```
+
+Or step by step (see each section below for the options):
+
+```bash
+python -m qualtrics_pipeline.export --survey-id SV_xxx --outdir runs/<run>
+python -m qualtrics_pipeline.frequencies --init-config --column-map runs/<run>/column_map.json
+python -m qualtrics_pipeline.frequencies --data runs/<run>/responses_clean.csv \
+    --column-map runs/<run>/column_map.json --outdir runs/<run>
+```
+
+A run writes, under its output directory:
+
+- `frequency_tables/*.csv` — one long-format table per question and breakout
+- `report.html` — every table, with controls to try formatting live and copy the
+  resulting config ([HTML validation report](#html-validation-report))
+- `report.docx` — the same tables as an editable Word document for the write-up
+  ([Word report](#word-report-reportdocx))
+- `frequency_manifest.json` — what was analysed, skipped, and how each table is set up
+
+Everything about the tables is set in one JSON config (`qualtrics_frequency_config.json`):
+per question, with `defaults` for all of them, and a top-level `word` block for the
+Word document's look. `--validate-config` (or the menu) checks it.
+
+## Contents
+
+- [Install](#install) · [Interactive menu](#interactive-menu-recommended-for-everyday-use)
+- [Export stage](#export-stage) · [Frequency stage](#frequency-stage) ·
+  [Validating the config](#validating-the-config)
+- [Word report](#word-report-reportdocx) · [HTML validation report](#html-validation-report)
+- Table options: [response ordering](#response-ordering-sort_by) ·
+  [zero-response rows](#zero-response-rows-include_empty_codes) ·
+  [missing rows](#missing-rows-include_missing) ·
+  [percentage bases](#percentage-bases-computed-up-front) ·
+  [crosstabs](#grouped-tables-crosstabs) ·
+  [presentation options](#table-presentation-options)
+
 ## Install
 
 ```bash
@@ -181,13 +223,17 @@ Layout:
   The scale columns all get the same width. Their labels are horizontal by default
   and wrap only between words — never mid-word. When a label word will not fit,
   the item column narrows (to `item_min_width_inches`), then the header font
-  shrinks (to `header_min_size`), and only then is the grid split into parts.
-  With `include_missing`, the Missing counts take a column when there is room;
-  when the column is what would squeeze the headers or split the grid, they go
-  in a line under the table instead (`"missing": "auto"`; or force `"column"` /
-  `"note"`). `"header_rotation": "always"` turns the labels sideways instead,
-  and `"auto"` keeps them horizontal when they fit and turns them when not.
-  `"matrices": {"layout": "list"}` gives the long item × answer list instead.
+  shrinks (to `header_min_size`). A matrix is never split across tables: if the
+  grid still cannot fit, each item becomes its own vertical frequency table
+  (Code / Response / Count / %, with its own Total and Missing rows) under a
+  sub-heading naming the item. With `include_missing`, the Missing counts take a
+  column when there is room; when the column is what would squeeze the headers
+  or stop the grid fitting, they go in a line under the table instead
+  (`"missing": "auto"`; or force `"column"` / `"note"`).
+  `"header_rotation": "always"` turns the labels sideways instead, and `"auto"`
+  keeps them horizontal when they fit and turns them when not.
+  `"layout": "items"` always uses one table per item; `"list"` gives a single
+  long item × answer table.
 - The Total row is bold with a rule above it; the Missing row is italic and last.
 - A select-all question lists its options as the responses, rather than repeating
   "Selected" on every row.
@@ -197,7 +243,17 @@ Layout:
 
 The document's look is set by a `"word"` block in the frequency config (validated
 with the rest of it), or a `--style` JSON file of the same shape, which overrides it.
-Every setting is optional:
+A question can override the table-level parts (`tables`, `crosstabs`, `matrices`,
+`write_ins`) with a `"word"` block of its own — for instance one matrix as items
+while the rest stay grids:
+
+```jsonc
+"questions": {
+  "QID12": { "word": { "matrices": { "layout": "items" } } }
+}
+```
+
+Page, fonts, title and numbering stay document-wide. Every setting is optional:
 
 ```jsonc
 "word": {
@@ -222,8 +278,8 @@ Every setting is optional:
               "min_group_column_width_inches": 0.55, "keep_together_max_rows": 30 },
   "crosstabs": { "header_rotation": "auto",  // auto | always | never
                  "rotate_at_columns": 8, "header_max_height_inches": 1.5 },
-  "matrices": { "layout": "grid",           // grid | list
-                "max_columns": 12,           // more scale points than this -> list
+  "matrices": { "layout": "grid",           // grid | items | list
+                "max_columns": 12,           // more scale points than this -> items
                 "header_rotation": "never",  // never (horizontal) | auto | always (sideways)
                 "header_min_size": 7,        // smallest header font when fitting labels
                 "item_min_width_inches": 0.9,  // the item column narrows no further

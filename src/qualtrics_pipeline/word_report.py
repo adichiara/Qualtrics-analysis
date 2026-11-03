@@ -103,9 +103,11 @@ DEFAULT_STYLE: dict[str, Any] = {
     },
     "matrices": {
         # grid: one row per item, one column per scale point (a rating matrix as it
-        #       appears in the survey); list: one row per item x answer.
+        #       appears in the survey) -- falling back to items when it cannot
+        #       fit one table; items: each item as its own vertical table;
+        # list: one table, one row per item x answer.
         "layout": "grid",
-        "max_columns": 12,         # more distinct answers than this -> list
+        "max_columns": 12,         # more distinct answers than this -> items
         # Scale-point headers: never = horizontal, wrapped between words (the item
         # column narrows, then the header font shrinks toward header_min_size,
         # before anything else gives); always = sideways; auto = horizontal when
@@ -141,7 +143,7 @@ _ENUMS = {
     "theme": set(_THEMES),
     "spacing": set(_SPACING),
     "value_align": {"center", "right"},
-    "layout": {"grid", "list"},
+    "layout": {"grid", "list", "items"},
     "missing": {"auto", "column", "note"},
     "paper_size": {"letter", "a4", "legal"},
     "orientation": {"portrait", "landscape"},
@@ -203,6 +205,24 @@ def validate_style(patch: Any, schema: dict = DEFAULT_STYLE, path: str = "word")
             elif value < 0 or (value == 0 and key not in _ZERO_OK):
                 errors.append(f"{name}: must be {'zero or more' if key in _ZERO_OK else 'positive'}")
     return errors
+
+
+# The style sections a single question may override (its "word" block in the
+# frequency config). The rest -- page, fonts, title -- belong to the document.
+QUESTION_STYLE_SECTIONS = {"matrices", "crosstabs", "tables", "write_ins"}
+
+
+def validate_question_style(patch: Any, path: str = "word") -> list[str]:
+    """Problems with a question's "word" override block."""
+    if not isinstance(patch, dict):
+        return [f"{path}: must be a JSON object"]
+    errors = []
+    for key in patch:
+        if not key.startswith("_") and key in DEFAULT_STYLE and key not in QUESTION_STYLE_SECTIONS:
+            errors.append(f"{path}.{key}: is document-wide; set it in the top-level \"word\" block")
+    allowed = {k: v for k, v in DEFAULT_STYLE.items() if k in QUESTION_STYLE_SECTIONS}
+    sub = {k: v for k, v in patch.items() if k not in DEFAULT_STYLE or k in QUESTION_STYLE_SECTIONS}
+    return errors + validate_style(sub, allowed, path)
 
 
 def resolve_style(*patches: dict | None) -> dict:
@@ -575,7 +595,6 @@ class _Writer:
     def flat_table(self, table) -> None:
         lay = flat_layout(table.rows, table.presentation, table.missing)
         stats, base, dec = lay["stats"], lay["report_base"], lay["decimals"]
-        t = self.style["tables"]
         has_attr = lay["has_attribute"]
         responses = [r for k, r in lay["entries"] if k == "response"]
         # A select-all question's rows are its options (the attribute), each with
@@ -586,19 +605,70 @@ class _Writer:
         options_only = has_attr and bool(coded) and all(
             str(r.get("response_label", "")) == "Selected" for r in coded
         )
-        if (self.style["matrices"]["layout"] == "grid" and has_attr and not options_only
-                and coded and len(coded) == len(responses)
-                and all((r.get("attribute") or "").strip() for r in responses)
-                and len({r.get("response_code") for r in responses}) <= self.style["matrices"]["max_columns"]):
-            self.matrix_table(table, lay)
+        is_matrix = (has_attr and not options_only and coded and len(coded) == len(responses)
+                     and all((r.get("attribute") or "").strip() for r in responses))
+        layout = self.style["matrices"]["layout"]
+        if is_matrix and layout != "list":
+            n_points = len({r.get("response_code") for r in responses})
+            # A grid that cannot fit on one table becomes one table per item
+            # rather than continuing onto a second, split table.
+            if layout == "items" or n_points > self.style["matrices"]["max_columns"] \
+                    or not self.matrix_table(table, lay):
+                self.item_tables(table, lay)
             return
         # No column of nothing but blanks (see _code_shown).
         show_code = (lay["show_code"] and not options_only
                      and any(_code_shown(r) for r in lay["shown"]))
+        self._entries_table(lay["entries"], stats, base, dec, show_code,
+                            has_attr and not options_only, options_only)
+        self._base_line(lay["shown"][0] if lay["shown"] else None, base, lay["hidden"])
+
+    def item_tables(self, table, lay: dict) -> None:
+        """A matrix too wide for one grid: each item as its own vertical table,
+        laid out like a single question, under a sub-heading naming the item."""
+        stats, base, dec = lay["stats"], lay["report_base"], lay["decimals"]
+        total_pos = table.presentation.get("response_total")
+        items: list[str] = []
+        rows_by: dict[str, list[dict]] = {}
+        missing_by: dict[str, dict] = {}
+        for kind, r in lay["entries"]:
+            item = r.get("attribute", "")
+            if kind == "response":
+                if item not in rows_by:
+                    items.append(item)
+                    rows_by[item] = []
+                rows_by[item].append(r)
+            elif kind == "missing":
+                missing_by[item] = r
+        show_code = lay["show_code"] and any(_code_shown(r) for r in lay["shown"])
+        size = self.style["fonts"]["question_size"] - 1
+        for item in items:
+            p = self.doc.add_paragraph()
+            _zero_spacing(p)
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.space_after = Pt(2)
+            p.paragraph_format.keep_with_next = True
+            self._run(p, item, size, bold=True, color="#333333")
+            entries: list[tuple[str, dict]] = [("response", r) for r in rows_by[item]]
+            if total_pos:
+                total = ("total", _aggregate_rows(rows_by[item], base))
+                entries = [total, *entries] if total_pos == "before" else [*entries, total]
+            if item in missing_by:
+                entries.append(("missing", missing_by[item]))
+            self._entries_table(entries, stats, base, dec, show_code, False, False)
+            self._base_line(rows_by[item][0], base, 0)
+        if lay["hidden"]:
+            self._caption(f"{lay['hidden']} response{'s' if lay['hidden'] != 1 else ''} hidden "
+                          "across the items", space_before=0)
+
+    def _entries_table(self, entries, stats, base, dec, show_code, show_attr, options_only) -> None:
+        """A vertical frequency table: one row per response (plus Total/Missing)."""
+        t = self.style["tables"]
+        has_attr = show_attr
         stat_w = max(t["stat_column_width_inches"], self._min_value_width(dec))
         widths: list[float] = []
         attr_w = t["attribute_column_width_inches"] or max(1.2, min(2.2, self.width * 0.3))
-        if has_attr and not options_only:
+        if has_attr:
             widths.append(attr_w)
         if show_code:
             widths.append(t["code_column_width_inches"])
@@ -606,10 +676,9 @@ class _Writer:
         widths.append(label_w)
         widths.extend([stat_w] * len(stats))
 
-        entries = lay["entries"]
         doc_table = self._new_table(len(entries) + 1, widths)
         head = doc_table.rows[0].cells
-        lead_heads = (["Attribute"] if has_attr and not options_only else []) + \
+        lead_heads = (["Attribute"] if has_attr else []) + \
             (["Code"] if show_code else []) + ["Response"]
         for c, text in enumerate(lead_heads):
             self._set(head[c], text, bold=True)
@@ -620,7 +689,7 @@ class _Writer:
             kinds.append(kind)
             cells = doc_table.rows[i].cells
             c = 0
-            if has_attr and not options_only:
+            if has_attr:
                 self._set(cells[c], "" if kind == "total" else row.get("attribute", ""))
                 c += 1
             if show_code:
@@ -641,7 +710,6 @@ class _Writer:
                           italic=kind == "missing", align=self._value_align)
                 c += 1
         self._finish_table(doc_table, kinds)
-        self._base_line(lay["shown"][0] if lay["shown"] else None, base, lay["hidden"])
 
     def _stacked(self, row: dict | None, stats: list[str], base: str, dec: int) -> str:
         """A cell holding several statistics, one per line. A blank one (Valid %
@@ -651,12 +719,13 @@ class _Writer:
         values = [_stat_text(row, s, base, dec) for s in stats]
         return "\n".join(v for i, v in enumerate(values) if v != "" or i == 0)
 
-    def matrix_table(self, table, lay: dict) -> None:
+    def matrix_table(self, table, lay: dict) -> bool:
         """A rating matrix as a grid: items down the side, scale points across.
 
         Reads the same rows the list layout would show (hidden codes removed,
         Valid n rebased), so only the arrangement differs. Total and Missing
-        become columns, since each item has its own.
+        become columns, since each item has its own. Returns False, writing
+        nothing, when the grid cannot fit on one table.
         """
         stats, base, dec = lay["stats"], lay["report_base"], lay["decimals"]
         pres = table.presentation
@@ -723,7 +792,7 @@ class _Writer:
             return grid_, self._matrix_geometry(cols_, needs)
 
         # Missing goes last (before Valid n) as a column -- or, if that is what
-        # makes the grid squeeze its headers or split, into a note under it.
+        # makes the grid squeeze its headers or not fit, into a note under it.
         policy = self.style["matrices"]["missing"]
         missing_col = (_MISSING_LABEL, "missing", "")
         with_missing = [*columns[:-1], missing_col, columns[-1]] if base == "valid" \
@@ -732,16 +801,20 @@ class _Writer:
         if missing and policy == "note":
             missing_note = True
         elif missing and policy == "auto":
-            grid, geo = geometry(with_missing)
+            _g, geo = geometry(with_missing)
             _g, alt = geometry(columns)
-            # Better = fewer parts, then a larger header font, then horizontal.
-            if (len(alt[2]), -alt[4], alt[3]) < (len(geo[2]), -geo[4], geo[3]):
+            # Keep the column unless dropping it lets the grid fit, or fit with
+            # a larger header font.
+            if alt and (not geo or alt[4] > geo[4]):
                 missing_note = True
             else:
                 columns = with_missing
         elif missing:
             columns = with_missing
-        grid, (item_w, widths, panels, rotate, head_size) = geometry(columns)
+        grid, geo = geometry(columns)
+        if geo is None:
+            return False
+        item_w, widths, panels, rotate, head_size = geo
         size = self.style["fonts"]["table_size"]
         for p_i, cols in enumerate(panels):
             sub = [columns[j] for j in cols]
@@ -778,6 +851,7 @@ class _Writer:
                 return f"{item} {row.get('n', '')}" + (f" ({pct})" if pct else "")
             self._caption("Missing (shown the question, no answer): " +
                           "; ".join(one(item) for item in items), space_before=0)
+        return True
 
     def _longest_word(self, headers: list[str], size: float) -> float:
         """Narrowest column (text only) the headers fit in without breaking a word."""
@@ -790,9 +864,9 @@ class _Writer:
         Total / Missing / Valid n are sized to what they hold. Horizontal
         headers wrap only between words, so a column must fit its longest word.
         In order, until it fits: the item column narrows (to
-        item_min_width_inches), the header font shrinks (to header_min_size) --
-        and only then does the grid turn its headers sideways ("auto") or split
-        into parts ("never").
+        item_min_width_inches), the header font shrinks (to header_min_size), and
+        in "auto" the headers turn sideways. None when nothing fits: a matrix is
+        never split into parts, it becomes one table per item instead.
         """
         mx, t = self.style["matrices"], self.style["tables"]
         table_size = self.style["fonts"]["table_size"]
@@ -841,18 +915,9 @@ class _Writer:
             fitted = plan(False, table_size)
             if fitted:
                 return fitted[0], fitted[1], whole, True, table_size
-        # Too many columns for one table even at the smallest setting: split into
-        # parts, keeping one width for every scale column.
-        horizontal = mode == "never"
-        size = min_size if horizontal else table_size
-        w_req = max(scale_need, self._longest_word(heads, size) + pad) if horizontal else scale_need
-        other_w = other_widths(horizontal, size)
-        col_need = [w_req if j in scale else other_w[j] for j in range(len(columns))]
-        room = self.width - item_min
-        panels = self._fit(col_need, room)
-        widths = {j: w for cols in panels
-                  for j, w in zip(cols, self._spread([col_need[j] for j in cols], room, cap), strict=True)}
-        return item_min, widths, panels, not horizontal, size
+        # Too many columns for one table even at the smallest setting: the
+        # caller lays the items out as separate tables instead.
+        return None
 
     def _needed_width(self, texts: list[str], bold: bool = False) -> float:
         """Width a value column needs to show every one of ``texts`` unwrapped."""
@@ -1143,7 +1208,17 @@ def generate_word_report(
         writer.notes()
     groups = _group_descriptions(run.run_dir, run.manifest)
     show_writeins = resolved["write_ins"]["show"]
+    per_question = run.manifest.get("table_word_style") or {}
     for table in run.tables:
+        # A question's own "word" block overrides the document style for its tables.
+        override = per_question.get(table.slug)
+        if override:
+            errors = validate_question_style(override, f"questions.{table.qkey}.word")
+            if errors:
+                raise SystemExit("Invalid Word style config:\n  " + "\n  ".join(errors))
+            writer.style = merge_style(resolved, override)
+        else:
+            writer.style = resolved
         if table.is_grouped:
             keys = [g for g in (table.rows[0].get("group_keys") or "").split(" | ") if g]
             by = " and ".join(groups.get(k, k) for k in keys)
