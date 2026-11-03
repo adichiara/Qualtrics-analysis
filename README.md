@@ -176,9 +176,15 @@ Layout:
   headers. Header rows are shaded and repeat on a new page; body rows are banded
   and never split across a page; a short table stays on one page with its heading.
 - A rating matrix is a grid, as it appears in the survey: one row per item, one
-  column per scale point (in survey order), with Total and Missing as columns and a
-  Valid n column when Valid is the base. `"matrices": {"layout": "list"}` gives the
-  long item × answer list instead.
+  column per defined scale point (in survey order, including points nobody chose),
+  with Total and Missing as columns and a Valid n column when Valid is the base.
+  The scale columns all get the same width. Their labels are horizontal by default,
+  wrapping at word breaks; when a label word will not fit, the item column narrows,
+  then the header font shrinks (to `header_min_size`), then long words are
+  hyphenated once at a syllable ("Dissatis-/fied") — and only then is the grid
+  split into parts. `"header_rotation": "always"` turns the labels sideways instead,
+  and `"auto"` keeps them horizontal when they fit and turns them when not.
+  `"matrices": {"layout": "list"}` gives the long item × answer list instead.
 - The Total row is bold with a rule above it; the Missing row is italic and last.
 - A select-all question lists its options as the responses, rather than repeating
   "Selected" on every row.
@@ -213,7 +219,11 @@ Every setting is optional:
               "min_group_column_width_inches": 0.55, "keep_together_max_rows": 30 },
   "crosstabs": { "header_rotation": "auto",  // auto | always | never
                  "rotate_at_columns": 8, "header_max_height_inches": 1.5 },
-  "matrices": { "layout": "grid", "max_columns": 12 },  // grid | list
+  "matrices": { "layout": "grid",           // grid | list
+                "max_columns": 12,           // more scale points than this -> list
+                "header_rotation": "never",  // never (horizontal) | auto | always (sideways)
+                "header_min_size": 7,        // smallest header font when fitting labels
+                "max_column_width_inches": 1.1 },
   "write_ins": { "show": true, "max_rows": null }
 }
 ```
