@@ -71,7 +71,7 @@ def _json_script(data: Any, elem_id: str) -> str:
 _PCT_FIELD = {"valid": "valid_pct", "eligible": "eligible_pct", "total": "total_pct"}
 _N_FIELD = {"valid": "valid_n", "eligible": "eligible_n", "total": "total_n"}
 _STAT_LABEL = {
-    "n": "n", "valid_n": "Valid n", "valid_pct": "Valid %", "eligible_n": "Eligible n",
+    "n": "Count", "valid_n": "Valid n", "valid_pct": "Valid %", "eligible_n": "Eligible n",
     "eligible_pct": "Eligible %", "total_n": "Total n", "total_pct": "Total %",
     "pct": "%", "base_n": "Base n",
 }
@@ -83,16 +83,19 @@ _STAT_CHIP_LABEL = {"pct": "Featured %", "base_n": "Featured base n"}
 # What each column means, shown in the report's "statistic definitions" panel. The
 # three bases mirror the semantics documented in frequencies.py.
 _STAT_DEFINITION = {
-    "n": "Respondents who chose this response option.",
+    "n": (
+        "Count: respondents who chose this response option (on a Missing row, "
+        "respondents shown the question who did not answer it)."
+    ),
     "valid_n": "Denominator: respondents who answered this question.",
-    "valid_pct": "n ÷ Valid n — share of those who answered.",
+    "valid_pct": "Count ÷ Valid n — share of those who answered (blank on a Missing row).",
     "eligible_n": (
         "Denominator: respondents shown this question per its display logic "
         "(all respondents when the question has no display logic)."
     ),
-    "eligible_pct": "n ÷ Eligible n — share of those who were asked.",
+    "eligible_pct": "Count ÷ Eligible n — share of those who were asked.",
     "total_n": "Denominator: all survey respondents.",
-    "total_pct": "n ÷ Total n — prevalence across the whole sample.",
+    "total_pct": "Count ÷ Total n — prevalence across the whole sample.",
     "pct": "Whichever percentage this question's reporting base features.",
     "base_n": "Whichever base count this question's reporting base features.",
 }
@@ -109,13 +112,22 @@ _PRES_DEFAULT = {
 # rather than how existing rows look. The manifest keeps them in their own map;
 # the report merges both into one per-table options dict, and the browser echoes
 # them into the *question* config block rather than a table spec.
-_FREQ_DEFAULT = {"include_empty_codes": False, "sort_by": "auto"}
+_FREQ_DEFAULT = {"include_empty_codes": False, "include_missing": False, "sort_by": "auto"}
 # Selectable stats, in display order. "base_n" is deliberately absent: it resolves
 # to whichever base is featured, which a crosstab already prints in its group
 # header and a flat table can name outright, so it never earned a toggle. It stays
 # accepted in config for back-compat.
 _STAT_ORDER = ["n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "pct"]
 _REPORT_BASES = ["valid", "eligible", "total"]
+# A Missing row counts respondents shown a question who left it blank. It is not a
+# response option, so it is kept apart from the table rows and pinned last.
+_MISSING_LABEL = "Missing"
+# Internal response-axis code for a crosstab's Missing entry; never shown.
+_MISSING_CODE = "__missing__"
+
+
+def _is_missing_row(row: dict) -> bool:
+    return (row.get("row_type") or "") == "missing"
 
 
 def _num(value: Any) -> float:
@@ -285,6 +297,10 @@ def _cell_html(row: dict | None, stats: list[str], report_base: str, decimals: i
     parts = []
     for i, stat in enumerate(stats):
         val = _stat_value(row, stat, report_base, decimals)
+        # A blank secondary stat (Valid % on a Missing row) is left out entirely,
+        # rather than printing its label beside nothing.
+        if i > 0 and val == "":
+            continue
         parts.append(
             val if i == 0
             else f'<span class="meta">{_esc(_stat_label(stat, report_base))}</span> {val}'
@@ -467,6 +483,8 @@ function rrInit() {
     return kept.length ? kept : rows;
   }
   var K = "\u0001";
+  var MISSING_LABEL = "Missing";
+  var MISSING_CODE = "__missing__";
   // A CSV describes answers people gave, so a code nobody chose leaves no trace in
   // it. The universe blob carries what the question *defines*, which is what lets
   // the checkbox add these rows here rather than only asking for a re-run.
@@ -636,6 +654,10 @@ function rrInit() {
       return cell;
     }
     stats.forEach(function (stat, i) {
+      var value = statValue(row, stat, reportBase, decimals);
+      // A blank secondary stat (Valid % on a Missing row) is left out entirely,
+      // rather than printing its label beside nothing.
+      if (i > 0 && value === "") { return; }
       if (i > 0) { cell.appendChild(document.createElement("br")); }
       if (stats.length > 1 && i > 0) {
         var span = document.createElement("span");
@@ -644,7 +666,7 @@ function rrInit() {
         cell.appendChild(span);
         cell.appendChild(document.createTextNode(" "));
       }
-      cell.appendChild(document.createTextNode(statValue(row, stat, reportBase, decimals)));
+      cell.appendChild(document.createTextNode(value));
     });
     return cell;
   }
@@ -756,7 +778,21 @@ function rrInit() {
     stats.forEach(function (stat) { tr.appendChild(cellNode(agg, [stat], reportBase, decimals)); });
     return tr;
   }
-  function renderFlatTable(tableEl, allRows, reportBase, presentation, sort, onSort, universe) {
+  // A Missing row: respondents shown the question who left it blank. Pinned
+  // after everything else -- including the Total, which it is not part of.
+  function buildFlatMissingRow(row, hasAttr, showCode, stats, reportBase, decimals) {
+    var tr = document.createElement("tr");
+    if (hasAttr) { tr.appendChild(td(row.attribute || "")); }
+    if (showCode) { tr.appendChild(td("")); }
+    var labelTd = document.createElement("td");
+    var em = document.createElement("em");
+    em.textContent = MISSING_LABEL;
+    labelTd.appendChild(em);
+    tr.appendChild(labelTd);
+    stats.forEach(function (stat) { tr.appendChild(cellNode(row, [stat], reportBase, decimals)); });
+    return tr;
+  }
+  function renderFlatTable(tableEl, allRows, reportBase, presentation, sort, onSort, universe, missing) {
     var thead = tableEl.querySelector("thead tr");
     var tbody = tableEl.querySelector("tbody");
     var decimals = presentation.pct_decimals;
@@ -785,11 +821,16 @@ function rrInit() {
       var totalAfter = buildFlatTotalRow(rows, hasAttr, showCode, stats, reportBase, decimals);
       if (totalAfter) { tbody.appendChild(totalAfter); }
     }
+    if (presentation.include_missing && missing && missing.length) {
+      missing.forEach(function (m) {
+        tbody.appendChild(buildFlatMissingRow(m, hasAttr, showCode, stats, reportBase, decimals));
+      });
+    }
     return sortItems(rows, sort, function (row) { return flatValueOf(row, sort.key, reportBase); });
   }
 
   // ---- grouped (crosstab) table ----
-  function pivotGrouped(rows, overallRows, presentation, reportBase, universe) {
+  function pivotGrouped(rows, overallRows, presentation, reportBase, universe, missing, overallMissing) {
     var nField = constants.n_field[reportBase] || "eligible_n";
     // Filling and ordering happen per group, so they run before the pivot; the
     // Overall column is its own single-group table and gets the same treatment.
@@ -849,7 +890,17 @@ function rrInit() {
     groupOrder.forEach(function (gc) { groupTotal[gc] = aggregateRow(groupRows[gc]); });
     var overallTotal = overallRows.length ? aggregateRow(overallRows) : null;
 
+    // Missing rows have no response code, so they are keyed by attribute alone.
+    var missingIdx = {}, overallMissingIdx = {};
+    (missing || []).forEach(function (r) {
+      missingIdx[(r.group_codes || "") + "\u0001" + (r.attribute || "")] = r;
+    });
+    (overallMissing || []).forEach(function (r) { overallMissingIdx[r.attribute || ""] = r; });
+
     function data(gcode, attr, code, isTotal) {
+      if (code === MISSING_CODE) {
+        return gcode === "__overall__" ? overallMissingIdx[attr] : missingIdx[gcode + "\u0001" + attr];
+      }
       if (gcode === "__overall__") { return isTotal ? overallTotal : overallIdx[attr + "\\u0001" + code]; }
       return isTotal ? groupTotal[gcode] : groupedIdx[gcode + "\\u0001" + attr + "\\u0001" + code];
     }
@@ -858,12 +909,23 @@ function rrInit() {
     var TOTAL = { attr: "__total__", code: "", label: "Total" };
     if (presentation.response_total === "before") { respAxis = [TOTAL].concat(respAxis); }
     else if (presentation.response_total === "after") { respAxis = respAxis.concat([TOTAL]); }
+    if (presentation.include_missing && missing && missing.length) {
+      var missingAttrs = [];
+      missing.forEach(function (r) {
+        if (missingAttrs.indexOf(r.attribute || "") === -1) { missingAttrs.push(r.attribute || ""); }
+      });
+      missingAttrs.forEach(function (a) {
+        respAxis.push({ attr: a, code: MISSING_CODE, label: MISSING_LABEL, missing: true });
+        if (a) { hasAttr = true; }
+      });
+    }
 
     return { groups: groups, respAxis: respAxis, hasAttr: hasAttr, data: data };
   }
   function respLabelText(opt, showCode) {
     var isTotal = opt.attr === "__total__";
     if (isTotal) { return "Total"; }
+    if (opt.missing) { return MISSING_LABEL; }
     if (showCode && opt.code !== "") { return opt.code + " \\u2014 " + opt.label; }
     return opt.label;
   }
@@ -881,6 +943,8 @@ function rrInit() {
   // Aggregate rows (the response Total, and the Overall group) are pinned at the
   // position their config option puts them; only real data rows take part in a sort.
   function isAggregateOpt(opt) { return opt.attr === "__total__"; }
+  // The Missing entries are pinned too (after the Total), but they are not a Total.
+  function isPinnedOpt(opt) { return isAggregateOpt(opt) || !!opt.missing; }
   function isAggregateGroup(g) { return g.code === "__overall__"; }
   // Sorts `items` while leaving pinned entries at their original indices.
   function sortAroundPinned(items, isPinned, sort, valueOf) {
@@ -934,7 +998,7 @@ function rrInit() {
           makeSortable(groupHeaderCell(g.label, g.base), { kind: "stat", stat: "grp:" + g.code }, sort, onSort)
         );
       });
-      sortAroundPinned(respAxis, isAggregateOpt, sort, function (opt) {
+      sortAroundPinned(respAxis, isPinnedOpt, sort, function (opt) {
         if (sort.key.kind === "attr") { return opt.attr; }
         if (sort.key.kind === "code") { return opt.code; }
         if (sort.key.kind === "label") { return opt.label; }
@@ -944,12 +1008,16 @@ function rrInit() {
         var isTotal = isAggregateOpt(opt);
         var tr = document.createElement("tr");
         if (hasAttr) { tr.appendChild(td(isTotal ? "" : opt.attr)); }
-        if (showCode) { tr.appendChild(td(isTotal ? "" : opt.code)); }
+        if (showCode) { tr.appendChild(td((isTotal || opt.missing) ? "" : opt.code)); }
         var labelTd = document.createElement("td");
         if (isTotal) {
           var strong = document.createElement("strong");
           strong.textContent = "Total";
           labelTd.appendChild(strong);
+        } else if (opt.missing) {
+          var em = document.createElement("em");
+          em.textContent = MISSING_LABEL;
+          labelTd.appendChild(em);
         } else {
           labelTd.textContent = opt.label;
         }
@@ -964,7 +1032,8 @@ function rrInit() {
   }
   function renderGrouped(tableEl, sdata, presentation, sort, onSort) {
     var base = presentation.percent_base || sdata.report_base;
-    var pivot = pivotGrouped(sdata.rows, sdata.overall_rows, presentation, base, sdata.universe);
+    var pivot = pivotGrouped(sdata.rows, sdata.overall_rows, presentation, base, sdata.universe,
+      sdata.missing, sdata.overall_missing);
     var stats = (presentation.stats && presentation.stats.length) ? presentation.stats : constants.default_cell_stats;
     renderGroupedTable(tableEl, pivot, stats, !!presentation.show_code,
       presentation.orientation || "columns", base, presentation.pct_decimals, sort, onSort);
@@ -1230,6 +1299,7 @@ function rrInit() {
       include: state.include !== false,
       percent_base: state.percent_base,
       include_empty_codes: !!state.include_empty_codes,
+      include_missing: !!state.include_missing,
       sort_by: state.row_order || "count_desc",
     };
     // Emitted unconditionally, so exporting a config and running it back through
@@ -1274,7 +1344,7 @@ function rrInit() {
   var TABLE_KEYS = ["show_code", "orientation", "overall", "response_total",
                     "stats", "pct_decimals", "hide_codes"];
   var QUESTION_KEYS = ["include", "percent_base", "sort_by", "response_order",
-                       "include_empty_codes"];
+                       "include_empty_codes", "include_missing"];
   function inList(v, list) { return list.indexOf(v) !== -1; }
   function readConfig(obj, kind) {
     var out = { values: {}, errors: [], ignored: [] };
@@ -1298,6 +1368,11 @@ function rrInit() {
           if (typeof v !== "boolean") { out.errors.push(key + " must be true or false"); break; }
           out.values.include_empty_codes = v;
           if (v) { out.ignored.push("include_empty_codes: zero-response rows are added when the CSV is written"); }
+          break;
+        case "include_missing":
+          // Missing counts are always embedded, so this applies live either way.
+          if (typeof v !== "boolean") { out.errors.push(key + " must be true or false"); }
+          else { out.values.include_missing = v; }
           break;
         case "orientation":
           if (!inList(v, constants.orientations)) { out.errors.push("orientation must be columns or rows"); }
@@ -1508,6 +1583,7 @@ function rrInit() {
   ];
   function optionSpecs(ctx) {
     var hasUniverse = !!(ctx.universe && ctx.universe.length);
+    var hasMissing = !!ctx.hasMissing;
     return [
       { key: "include", kind: "bool", label: "Show this table", global: "Show all tables" },
       { key: "show_code", kind: "bool", label: "Show code column", global: "Show code columns" },
@@ -1516,6 +1592,12 @@ function rrInit() {
         title: hasUniverse
           ? "Show a row for every code the survey defines, including the ones nobody chose."
           : "These answers are verbatim text, not a fixed set of codes, so there is nothing to fill in." },
+      { key: "include_missing", kind: "bool", label: "Missing row", global: "Missing rows",
+        disabled: !hasMissing,
+        title: hasMissing
+          ? "Add a row counting respondents who were shown the question but did not answer. " +
+            "Its Valid % is blank (they are outside the Valid base) and it is never part of the Total."
+          : "No Missing counts were recorded for this table; re-run the frequencies stage to add them." },
       { key: "row_order", kind: "select", label: "Row order", options: ROW_ORDER_OPTS,
         title: "Survey order needs the question's defined codes; Custom order is the " +
                "response_order the CSV was written with. Clicking a column header still " +
@@ -1627,6 +1709,7 @@ function rrInit() {
       hide_codes: (pres.hide_codes || []).slice(),
       percent_base: sdata.report_base,
       include_empty_codes: !!pres.include_empty_codes,
+      include_missing: !!pres.include_missing,
       // What the CSV is already sorted by, so the control starts by describing
       // the table rather than proposing a change to it.
       row_order: pres.sort_by || "count_desc",
@@ -1639,6 +1722,7 @@ function rrInit() {
       hide_codes: effective.hide_codes.slice(),
       percent_base: effective.percent_base,
       include_empty_codes: effective.include_empty_codes,
+      include_missing: effective.include_missing,
       row_order: effective.row_order,
       response_order: [],
       include: true,
@@ -1654,7 +1738,8 @@ function rrInit() {
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
       hideables.forEach(function (el) { el.hidden = !state.include; });
-      renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort, sdata.universe);
+      renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort, sdata.universe,
+        sdata.missing);
       if (metaEl) {
         // Counted against the filled-in row set, and deliberately not dropEmpty'd:
         // a zero-response row holds no respondents, so removing it moves no base
@@ -1673,7 +1758,8 @@ function rrInit() {
     var panel = buildPanel(toolsEl, "Modify this table");
     var row1 = document.createElement("div");
     row1.className = "rr-row";
-    var specs = optionSpecs({ grouped: false, universe: sdata.universe });
+    var specs = optionSpecs({ grouped: false, universe: sdata.universe,
+      hasMissing: !!(sdata.missing && sdata.missing.length) });
     var syncOpts = buildOptionRow(row1, specs, state, rerender);
     panel.appendChild(row1);
 
@@ -1748,6 +1834,7 @@ function rrInit() {
       hide_codes: (pres.hide_codes || []).slice(),
       percent_base: sdata.report_base,
       include_empty_codes: !!pres.include_empty_codes,
+      include_missing: !!pres.include_missing,
       // What the CSV is already sorted by, so the control starts by describing
       // the table rather than proposing a change to it.
       row_order: pres.sort_by || "count_desc",
@@ -1762,6 +1849,7 @@ function rrInit() {
       hide_codes: effective.hide_codes.slice(),
       percent_base: effective.percent_base,
       include_empty_codes: effective.include_empty_codes,
+      include_missing: effective.include_missing,
       row_order: effective.row_order,
       response_order: [],
       include: true,
@@ -1789,7 +1877,8 @@ function rrInit() {
     var panel = buildPanel(toolsEl, "Modify this table");
     var row1 = document.createElement("div");
     row1.className = "rr-row";
-    var specs = optionSpecs({ grouped: true, universe: sdata.universe, hasOverall: hasOverall });
+    var specs = optionSpecs({ grouped: true, universe: sdata.universe, hasOverall: hasOverall,
+      hasMissing: !!(sdata.missing && sdata.missing.length) });
     var syncOpts = buildOptionRow(row1, specs, state, function () {
       rerender();
     });
@@ -1950,7 +2039,7 @@ function rrInit() {
     // least one table registered -- which is how orientation and the Overall
     // position stay out of a report with no crosstabs, and how a per-question
     // option like hide_codes never turns up here at all.
-    var gspecs = optionSpecs({ grouped: true, universe: [1], hasOverall: true })
+    var gspecs = optionSpecs({ grouped: true, universe: [1], hasOverall: true, hasMissing: true })
       .filter(function (sp) { return (globalSubs[sp.key] || []).length; });
     var row = document.createElement("div");
     row.className = "rr-row";
@@ -2004,7 +2093,7 @@ function rrInit() {
     var setFull = snippetPart(full,
       "Every question as currently shown \\u2014 paste over qualtrics_frequency_config.json, " +
       "or paste a config in and press Apply to rearrange the report to match. " +
-      "include, percent_base, sort_by, response_order and include_empty_codes are what " +
+      "include, percent_base, sort_by, response_order, include_empty_codes and include_missing are what " +
       "the frequencies stage reads when it writes the CSVs; the report applies all of " +
       "them here too, so re-run that stage only when you want the CSVs to match.",
       applyReportConfig);
@@ -2042,7 +2131,7 @@ def _render_writein_table(text_rows: list[dict[str, str]]) -> str:
     return (
         f'<div class="meta">Write-in responses ({total})</div>'
         '<table class="writein"><thead><tr><th>Write-in response</th>'
-        '<th class="num">n</th></tr></thead>'
+        '<th class="num">Count</th></tr></thead>'
         f"<tbody>{body}</tbody></table>"
     )
 
@@ -2055,6 +2144,7 @@ def _render_question_section(
     presentation: dict,
     slug: str,
     universe: list[dict] | None = None,
+    missing_rows: list[dict] | None = None,
 ) -> str:
     first = rows[0]
     question_id = first.get("question_id") or qkey
@@ -2113,6 +2203,15 @@ def _render_question_section(
     body.extend(_row_html(_label_cells(r), r) for r in rows)
     if response_total == "after":
         body.append(_total_row())
+    # Pinned last, after any Total: a non-answer is not a response option, so it
+    # is neither summed into the Total nor part of the Valid base.
+    if presentation.get("include_missing"):
+        for r in missing_rows or []:
+            lead = f"<td>{_esc(r.get('attribute'))}</td>" if has_attribute else ""
+            if show_code:
+                lead += "<td></td>"
+            lead += f"<td><em>{_esc(_MISSING_LABEL)}</em></td>"
+            body.append(_row_html(lead, r))
 
     badge = '<span class="badge">conditional</span>' if conditional else ""
     meta = (
@@ -2135,6 +2234,8 @@ def _render_question_section(
             # nobody chose and offer survey order -- neither is derivable from
             # rows that only describe answers people gave.
             "universe": universe or [],
+            # Eligible-but-blank counts; shown when include_missing is on.
+            "missing": missing_rows or [],
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -2159,6 +2260,8 @@ def _render_grouped_section(
     presentation: dict,
     overall_rows: list[dict[str, str]] | None,
     universe: list[dict] | None = None,
+    missing_rows: list[dict] | None = None,
+    overall_missing: list[dict] | None = None,
 ) -> str:
     """Pivot a long grouped frequency table into a wide crosstab.
 
@@ -2229,7 +2332,16 @@ def _render_grouped_section(
     group_total = {gc: _aggregate_rows(group_rows[gc], report_base) for gc in group_order}
     overall_total = _aggregate_rows(overall_rows, report_base) if overall_rows else None
 
+    # Missing rows are keyed by attribute alone (they have no response code) and
+    # live on their own pinned axis entries, after any Total.
+    missing_idx = {(r.get("group_codes", ""), r.get("attribute", "")): r for r in (missing_rows or [])}
+    overall_missing_idx = {r.get("attribute", ""): r for r in (overall_missing or [])}
+
     def _data(gcode: str, attr: str, code: str, is_total: bool) -> dict | None:
+        if code == _MISSING_CODE:
+            if gcode == "__overall__":
+                return overall_missing_idx.get(attr)
+            return missing_idx.get((gcode, attr))
         if gcode == "__overall__":
             return overall_total if is_total else overall_idx.get((attr, code))
         return group_total.get(gcode) if is_total else grouped_idx.get((gcode, attr, code))
@@ -2241,8 +2353,17 @@ def _render_grouped_section(
         resp_axis = [TOTAL, *resp_axis]
     elif response_total == "after":
         resp_axis = [*resp_axis, TOTAL]
+    if presentation.get("include_missing") and missing_rows:
+        missing_attrs: list[str] = []
+        for r in missing_rows:
+            if r.get("attribute", "") not in missing_attrs:
+                missing_attrs.append(r.get("attribute", ""))
+        resp_axis.extend((a, _MISSING_CODE, _MISSING_LABEL) for a in missing_attrs)
+        has_attr = has_attr or any(missing_attrs)
 
     def _resp_label(attr: str, code: str, label: str) -> str:
+        if code == _MISSING_CODE:
+            return f"<em>{_esc(_MISSING_LABEL)}</em>"
         text = "Total" if attr == "__total__" else label
         if show_code and code not in ("", "__total__"):
             text = f"{code} &mdash; {_esc(label)}"
@@ -2275,10 +2396,16 @@ def _render_grouped_section(
         body = []
         for attr, code, label in resp_axis:
             is_total = attr == "__total__"
+            is_missing = code == _MISSING_CODE
             lead = f"<td>{'' if is_total else _esc(attr)}</td>" if has_attr else ""
             if show_code:
-                lead += f"<td>{'' if is_total else _esc(code)}</td>"
-            lead += f"<td>{'<strong>Total</strong>' if is_total else _esc(label)}</td>"
+                lead += f"<td>{'' if (is_total or is_missing) else _esc(code)}</td>"
+            if is_total:
+                lead += "<td><strong>Total</strong></td>"
+            elif is_missing:
+                lead += f"<td><em>{_esc(_MISSING_LABEL)}</em></td>"
+            else:
+                lead += f"<td>{_esc(label)}</td>"
             cells = lead
             for gcode, _glabel, _gbase in groups:
                 cells += _cell_html(_data(gcode, attr, code, is_total), stats, report_base, decimals)
@@ -2307,6 +2434,9 @@ def _render_grouped_section(
             # nobody chose and offer survey order -- neither is derivable from
             # rows that only describe answers people gave.
             "universe": universe or [],
+            # Eligible-but-blank counts; shown when include_missing is on.
+            "missing": missing_rows or [],
+            "overall_missing": overall_missing or [],
             "presentation": presentation,
         },
         f"{slug}-data",
@@ -2349,6 +2479,7 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     presentation_map = manifest.get("table_presentation") or {}
     freq_opts_map = manifest.get("table_frequency_opts") or {}
     universe_map = manifest.get("table_code_universe") or {}
+    missing_map: dict[str, list[dict]] = dict(manifest.get("table_missing_rows") or {})
     data_path = manifest.get("data_path", "(unknown)")
 
     # Overall (ungrouped) rows by question_key, for the optional Overall column.
@@ -2356,10 +2487,17 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     blocks: list[tuple[tuple, str, str, bool, list[dict[str, str]]]] = []
     for csv_path in freq_dir.glob("*_frequencies.csv"):
         rows = load_csv_rows(csv_path)
-        if not rows:
-            continue
         stem = csv_path.stem
         slug = stem.removesuffix("_frequencies")
+        # A CSV written with include_missing on carries its Missing rows inline;
+        # they are not response options, so they come out of the table rows and
+        # are handled like the manifest's copy (which wins when both exist).
+        csv_missing = [r for r in rows if _is_missing_row(r)]
+        rows = [r for r in rows if not _is_missing_row(r)]
+        if csv_missing:
+            missing_map.setdefault(slug, csv_missing)
+        if not rows:
+            continue
         qkey = rows[0].get("question_key") or slug
         is_grouped = bool((rows[0].get("group_keys") or "").strip())
         if not is_grouped:
@@ -2392,11 +2530,12 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         _render_grouped_section(
             slug, rows, qkey in conditional, _presentation(slug),
             overall_by_qkey.get(qkey), universe_map.get(slug),
+            missing_map.get(slug), missing_map.get(qkey),
         )
         if is_grouped
         else _render_question_section(
             qkey, rows, qkey in conditional, writeins.get(qkey, []), _presentation(slug), slug,
-            universe_map.get(slug),
+            universe_map.get(slug), missing_map.get(slug),
         )
         for _, slug, qkey, is_grouped, rows in blocks
     )
@@ -2419,7 +2558,7 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         "answered), Eligible % (of those shown the question per display logic), and Total % "
         "(of all respondents). The configured reporting base is marked &#9733;. Write-in / "
         "'Other' responses are shown in a separate table beneath each question. Grouped "
-        "tables (crosstabs) show cells as n and the featured % within each group column. "
+        "tables (crosstabs) show cells as Count and the featured % within each group column. "
         'Questions gated by display logic are marked <span class="badge">conditional</span>. '
         "Use the controls above each table to try different formatting live in the browser; "
         "open “Show config snippet” to copy the JSON to paste into the frequency config."

@@ -602,7 +602,7 @@ def test_include_empty_codes_is_a_question_level_config_key() -> None:
     script = report_mod._SCRIPT
     # Emitted in the question block, never in a table spec.
     assert "include_empty_codes: !!state.include_empty_codes" in script
-    assert '"include_empty_codes"];' in script
+    assert '"include_empty_codes", "include_missing"];' in script
     table_keys = script.split('var TABLE_KEYS = ')[1].split("];")[0]
     assert "include_empty_codes" not in table_keys
 
@@ -688,3 +688,116 @@ def test_report_script_is_syntactically_valid_javascript() -> None:
 
     proc = subprocess.run([node, "--check", "-"], input=_SCRIPT, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Count label and the Missing row
+# ---------------------------------------------------------------------------
+
+def test_count_column_is_labelled_count(tmp_path) -> None:
+    html = generate_html_report(_flat_run(tmp_path)).read_text()
+    table = html.split('id="QID2-table"')[1].split("</table>")[0]
+    assert '<th class="num">Count</th>' in table
+    assert '<th class="num">n</th>' not in table
+
+
+def _missing_row(**kw) -> dict:
+    fields = dict(response_code="", response_label="Missing", n="7", valid_pct="",
+                  eligible_n="108", eligible_pct="6.48", total_pct="6.48", row_type="missing")
+    fields.update(kw)
+    return _base_row(**fields)
+
+
+def _missing_run(tmp_path, include_missing, presentation=None, missing_in_csv=False):
+    run_dir = tmp_path / "run"
+    freq_dir = run_dir / "frequency_tables"
+    freq_dir.mkdir(parents=True)
+    rows = [
+        _base_row(response_code="1", response_label="Schofield", n="42"),
+        _base_row(response_code="2", response_label="Fort Bragg", n="59"),
+    ]
+    if missing_in_csv:
+        rows.append(_missing_row())
+    path = freq_dir / "QID2_frequencies.csv"
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=[*rows[0], "row_type"], restval="")
+        w.writeheader()
+        w.writerows(rows)
+    manifest = {
+        "data_path": "x.csv",
+        "table_presentation": {"QID2": presentation or {}},
+        "table_frequency_opts": {"QID2": {"include_missing": include_missing}},
+    }
+    if not missing_in_csv:
+        manifest["table_missing_rows"] = {"QID2": [_missing_row()]}
+    (run_dir / "frequency_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return run_dir
+
+
+def _table(html: str, slug: str = "QID2") -> str:
+    return html.split(f'id="{slug}-table"')[1].split("</table>")[0]
+
+
+def test_missing_row_hidden_unless_switched_on(tmp_path) -> None:
+    html = generate_html_report(_missing_run(tmp_path, False)).read_text()
+    assert "Missing" not in _table(html)
+    # Embedded either way, so the browser checkbox can show it without a re-run.
+    blob = _blob(html, "QID2")
+    assert blob["missing"][0]["n"] == "7"
+    assert blob["presentation"]["include_missing"] is False
+
+
+def test_missing_row_rendered_last_with_blank_valid_pct(tmp_path) -> None:
+    html = generate_html_report(_missing_run(
+        tmp_path, True, {"stats": ["n", "valid_pct", "eligible_pct"], "response_total": "after"},
+    )).read_text()
+    rows = _table(html).split("<tr>")
+    last = rows[-1]
+    assert "<em>Missing</em>" in last
+    # Count, then a blank Valid %, then Eligible %.
+    assert '<td class="num">7</td><td class="num"></td><td class="num">6.48%</td>' in last
+    # The Total above it sums the responses only: 42 + 59.
+    assert "<strong>Total</strong>" in rows[-2] and '<td class="num">101</td>' in rows[-2]
+
+
+def test_missing_rows_in_the_csv_are_not_treated_as_responses(tmp_path) -> None:
+    html = generate_html_report(_missing_run(
+        tmp_path, True, {"response_total": "after", "stats": ["n"]}, missing_in_csv=True,
+    )).read_text()
+    blob = _blob(html, "QID2")
+    assert [r["response_label"] for r in blob["rows"]] == ["Schofield", "Fort Bragg"]
+    assert [r["response_label"] for r in blob["missing"]] == ["Missing"]
+    assert [c["label"] for c in blob["codes"]] == ["Schofield", "Fort Bragg"]
+    assert '<td class="num">101</td>' in _table(html)
+
+
+def test_grouped_missing_row_pinned_after_total(tmp_path) -> None:
+    run_dir = _grouped_run(tmp_path, {"response_total": "after", "overall": "after", "stats": ["n"]})
+    manifest = json.loads((run_dir / "frequency_manifest.json").read_text())
+    manifest["table_frequency_opts"] = {"QID2__by__Q1.9": {"include_missing": True}}
+    manifest["table_missing_rows"] = {
+        "QID2__by__Q1.9": [
+            _grouped_row("1", "Uniform A", "", "Missing", "4", "20", "", row_type="missing"),
+            _grouped_row("2", "Uniform B", "", "Missing", "2", "15", "", row_type="missing"),
+        ],
+        "QID2": [_missing_row(n="6")],
+    }
+    (run_dir / "frequency_manifest.json").write_text(json.dumps(manifest))
+    html = generate_html_report(run_dir).read_text()
+    rows = _table(html, "QID2__by__Q1.9").split("<tr>")
+    assert "<strong>Total</strong>" in rows[-2]
+    last = rows[-1]
+    assert "<em>Missing</em>" in last
+    # Uniform A, Uniform B, then the Overall column.
+    assert '<td class="num">4</td><td class="num">2</td><td class="num">6</td>' in last
+    blob = _blob(html, "QID2__by__Q1.9")
+    assert len(blob["missing"]) == 2 and blob["overall_missing"][0]["n"] == "6"
+
+
+def test_include_missing_is_a_question_level_config_key() -> None:
+    from qualtrics_pipeline import report as report_mod
+
+    script = report_mod._SCRIPT
+    assert "include_missing: !!state.include_missing" in script
+    table_keys = script.split('var TABLE_KEYS = ')[1].split("];")[0]
+    assert "include_missing" not in table_keys

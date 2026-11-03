@@ -172,11 +172,16 @@ def _eligible_n(rows, qkey, display_logic):
     Uses the question's display-logic tree when it is fully evaluable;
     otherwise every respondent is treated as eligible.
     """
+    return sum(_eligible_mask(rows, qkey, display_logic))
+
+
+def _eligible_mask(rows, qkey, display_logic) -> list[bool]:
+    """Per-respondent eligibility, in the same order as ``rows``."""
     entry = (display_logic or {}).get(qkey)
     if not entry or not entry.get("fully_evaluable") or not entry.get("tree"):
-        return len(rows)
+        return [True] * len(rows)
     tree = entry["tree"]
-    return sum(1 for r in rows if evaluate_logic(tree, r))
+    return [bool(evaluate_logic(tree, r)) for r in rows]
 
 
 # The percentage denominators every frequency row carries:
@@ -214,7 +219,15 @@ PCT_DECIMALS_MAX = 6
 # manifest map.
 FREQUENCY_DEFAULTS = {
     "include_empty_codes": False,  # emit n = 0 rows for defined-but-unchosen codes
+    "include_missing": False,      # emit a "Missing" row: eligible but did not answer
 }
+
+# row_type values in the frequency CSV. "missing" rows count respondents who were
+# shown a question (eligible) but left it blank; they are not a response option,
+# so they never take part in a Total, a sort, or the Valid base.
+ROW_TYPE_RESPONSE = "response"
+ROW_TYPE_MISSING = "missing"
+MISSING_LABEL = "Missing"
 
 
 def _stamp_frequency_opts(cfg: dict, mappings: list[dict[str, Any]]) -> dict:
@@ -367,6 +380,13 @@ def _config_reference() -> dict[str, str]:
             "this fills in options nobody picked -- not \"Not selected\" rows. Off by default: "
             "a long dropdown defines hundreds of codes and would produce a row for each."
         ),
+        "include_missing": (
+            "true|false - add a \"Missing\" row counting respondents who were shown the "
+            "question (eligible) but did not answer it. Its Valid % is left blank, since "
+            "non-answerers are outside the Valid base; Eligible/Total % are shown. One row "
+            "per matrix attribute; one per question for select-all. Never counted in the "
+            "Total row. Question-level only; ignored on a table spec. Off by default."
+        ),
         "percent_base": f"{pct_opts} - featured denominator (valid=answered, eligible=shown per display logic, total=all respondents)",
         "show_code": "true|false - show the response-code column in the report",
         "stats": f"list from: {stat_opts} (omit/empty = report default)",
@@ -501,10 +521,80 @@ def _build_question_rows(subset, qkey, mappings, cfg, display_logic, group_cols)
                 "total_n": total_n,
                 "total_pct": _pct(n, total_n),
                 "report_base": report_base,
+                "row_type": ROW_TYPE_RESPONSE,
             }
             row.update(group_cols)
             out_rows.append(row)
     return out_rows
+
+
+def _build_missing_rows(subset, qkey, mappings, cfg, display_logic, group_cols):
+    """"Missing" rows: respondents shown the question who left it blank.
+
+    A blank answer leaves no row in a frequency table -- the only trace is the gap
+    between Eligible n and Valid n -- so this counts it outright. One row per
+    answer column (a matrix attribute each), but one per question for a
+    select-all, whose columns are options rather than separate items: there,
+    "missing" means picked nothing at all.
+
+    Valid % is blank: Valid n counts only those who answered, so a non-answer
+    share of it means nothing. Eligible % and Total % are ordinary prevalences.
+    """
+    total_n = len(subset)
+    eligible = _eligible_mask(subset, qkey, display_logic)
+    eligible_n = sum(eligible)
+    report_base = cfg.get("percent_base", "eligible")
+    if report_base not in PERCENT_BASES:
+        report_base = "eligible"
+    mode = cfg.get("frequency_mode", "auto")
+
+    coded = [m for m in mappings if not _is_write_in(m)]
+    if not coded:
+        return []
+    multi = [m for m in coded if m.get("selector") in MULTI_SELECTORS]
+    # (mapping carrying the descriptive fields, columns whose answers count, attribute)
+    blocks: list[tuple[dict, list[str], str]] = []
+    if multi:
+        blocks.append((multi[0], [m["column"] for m in multi], ""))
+    blocks.extend(
+        (m, [m["column"]], m.get("sub_question_text", ""))
+        for m in coded
+        if m.get("selector") not in MULTI_SELECTORS
+    )
+
+    out = []
+    for m, cols, attribute in blocks:
+        answered = [any(not _is_missing(r.get(c)) for c in cols) for r in subset]
+        missing_n = sum(1 for e, a in zip(eligible, answered, strict=True) if e and not a)
+        question_type = m.get("question_type", "")
+        scale_type = (
+            "interval"
+            if (mode == "interval" or (mode == "auto" and question_type in {"Matrix", "NPS"}))
+            else "nominal"
+        )
+        row = {
+            "question_key": qkey,
+            "question_id": m.get("data_export_tag", ""),
+            "question_text": m.get("question_text", ""),
+            "question_type": question_type,
+            "attribute": attribute,
+            "column": cols[0] if len(cols) == 1 else "",
+            "scale_type": scale_type,
+            "response_code": "",
+            "response_label": MISSING_LABEL,
+            "n": missing_n,
+            "valid_n": sum(answered),
+            "valid_pct": "",
+            "eligible_n": eligible_n,
+            "eligible_pct": _pct(missing_n, eligible_n),
+            "total_n": total_n,
+            "total_pct": _pct(missing_n, total_n),
+            "report_base": report_base,
+            "row_type": ROW_TYPE_MISSING,
+        }
+        row.update(group_cols)
+        out.append(row)
+    return out
 
 
 def _table_specs(cfg):
@@ -601,6 +691,9 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                     rows, qkey, mappings, cfg, display_logic, dict(_EMPTY_GROUP)
                 )
                 table_meta[qkey] = {
+                    "missing_rows": _build_missing_rows(
+                        rows, qkey, mappings, cfg, display_logic, dict(_EMPTY_GROUP)
+                    ),
                     "qkey": qkey, "group_by": [], "n_groups": 1,
                     "dropped_missing": 0, "presentation": presentation,
                     "frequency": _stamp_frequency_opts(cfg, mappings),
@@ -620,6 +713,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
 
             slug = f"{qkey}__by__{'_'.join(gcols)}"
             out_rows: list[dict[str, Any]] = []
+            missing_rows: list[dict[str, Any]] = []
             for codes in sorted(level_rows, key=lambda c: _group_level_sort_key(c, gcols, by_col)):
                 glabels = [
                     (by_col[gc].get("response_labels") or {}).get(code, code)
@@ -633,8 +727,12 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                 out_rows.extend(
                     _build_question_rows(level_rows[codes], qkey, mappings, cfg, display_logic, group_cols)
                 )
+                missing_rows.extend(
+                    _build_missing_rows(level_rows[codes], qkey, mappings, cfg, display_logic, group_cols)
+                )
             tables[slug] = out_rows
             table_meta[slug] = {
+                "missing_rows": missing_rows,
                 "qkey": qkey,
                 "group_by": gcols,
                 "n_groups": len(level_rows),
@@ -689,7 +787,7 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
     for stale in text_dir.glob("*_open_text.csv"):
         stale.unlink()
 
-    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base", "group_keys", "group_codes", "group_labels"]
+    fields = ["question_key", "question_id", "question_text", "question_type", "attribute", "column", "scale_type", "response_code", "response_label", "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "report_base", "row_type", "group_keys", "group_codes", "group_labels"]
     outs: list[Path] = []
     empty_output_tables: list[str] = []
     for qk in sorted(tables.keys()):
@@ -697,7 +795,14 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
             empty_output_tables.append(qk)
             continue
         p = freq_dir / f"{qk}_frequencies.csv"
-        write_csv(p, tables[qk], fields)
+        out_rows = tables[qk]
+        # Missing rows are always computed (the report can switch them on live),
+        # but only written into the CSV when asked for: downstream consumers of
+        # the CSV should not have to know to filter them out by default.
+        meta = report_meta["table_specs"].get(qk, {})
+        if meta.get("frequency", {}).get("include_missing"):
+            out_rows = out_rows + meta.get("missing_rows", [])
+        write_csv(p, out_rows, fields)
         outs.append(p)
 
     for qk, maps in text_outputs.items():
@@ -767,6 +872,12 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
             slug: meta["code_universe"]
             for slug, meta in report_meta["table_specs"].items()
             if tables.get(slug) and meta["code_universe"]
+        },
+        # Always present, so the report can toggle the Missing row without a re-run.
+        "table_missing_rows": {
+            slug: meta["missing_rows"]
+            for slug, meta in report_meta["table_specs"].items()
+            if tables.get(slug) and meta.get("missing_rows")
         },
         "output_files": [str(p) for p in outs],
     }
