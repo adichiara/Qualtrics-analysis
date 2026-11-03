@@ -553,7 +553,7 @@ def action_run_analysis(state: dict, input_fn: InputFn, print_fn: PrintFn) -> Pa
         print_fn(f"Analysis failed: {e}")
         return None
 
-    print_fn(f"Wrote {len(outs)} output file(s), including report.html")
+    print_fn(f"Wrote {len(outs)} output file(s), including report.html and report.docx")
     state.update(last_run_dir=str(run_dir), last_config_path=str(config_path))
     save_state(state)
     report_path = run_dir / "report.html"
@@ -564,16 +564,19 @@ def action_run_analysis(state: dict, input_fn: InputFn, print_fn: PrintFn) -> Pa
 
 def action_regenerate_report(state: dict, input_fn: InputFn, print_fn: PrintFn) -> None:
     from .report import generate_html_report
+    from .word_report import generate_word_report
 
     run_dir = _select_run(state, input_fn, print_fn)
     if run_dir is None:
         return
     try:
         report_path = generate_html_report(run_dir)
+        docx_path = generate_word_report(run_dir)
     except SystemExit as e:
         print_fn(f"Report generation failed: {e}")
         return
     print_fn(f"Wrote {report_path}")
+    print_fn(f"Wrote {docx_path}")
     state.update(last_run_dir=str(run_dir))
     save_state(state)
     if _confirm(input_fn, "Open report.html in a browser?"):
@@ -609,7 +612,7 @@ def action_full_pipeline(state: dict, input_fn: InputFn, print_fn: PrintFn) -> N
     except SystemExit as e:
         print_fn(f"Analysis failed: {e}")
         return
-    print_fn(f"Wrote {len(outs)} output file(s), including report.html")
+    print_fn(f"Wrote {len(outs)} output file(s), including report.html and report.docx")
     report_path = Path(run_dir) / "report.html"
     if report_path.exists() and _confirm(input_fn, "Open report.html in a browser?"):
         webbrowser.open(report_path.resolve().as_uri())
@@ -635,7 +638,7 @@ MENU = [
     ("Configure a single question (guided menu)", action_configure_question),
     ("Validate config", action_validate_config),
     ("Run frequency analysis + report", action_run_analysis),
-    ("Regenerate HTML report only", action_regenerate_report),
+    ("Regenerate reports only (HTML + Word)", action_regenerate_report),
     ("Full pipeline (export -> config -> analysis)", action_full_pipeline),
     ("Show status (env vars, state, discovered runs)", action_show_status),
 ]

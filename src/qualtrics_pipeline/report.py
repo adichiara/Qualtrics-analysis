@@ -3,9 +3,10 @@
 This is a validation aid: it reads the per-question ``frequency_tables/*.csv``
 files produced by the frequency stage (and any ``open_text_outputs/*.csv``) and
 renders them into one self-contained ``report.html`` so the computed counts and
-percentages can be eyeballed for accuracy. The eventual presentation output is a
-MS Word document produced elsewhere; this report deliberately favours a faithful,
-complete rendering of every value over visual polish.
+percentages can be eyeballed for accuracy. The presentation output is the Word
+document written by word_report.py, which shares this module's data loading and
+table layout; this report deliberately favours a faithful, complete rendering of
+every value over visual polish.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import html
 import json
 import re
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -289,7 +291,12 @@ def _stat_value(row: dict | None, stat: str, report_base: str, decimals: int = 2
 
 
 def _aggregate_rows(rows: list[dict], report_base: str) -> dict:
-    """Synthetic 'Total' row: sum n and percentages; keep base counts constant."""
+    """Synthetic 'Total' row: sum n; keep base counts constant.
+
+    Each percentage is the summed count over its base, not a sum of the rows'
+    percentages: those are rounded, so adding them drifts (five rows can total
+    99.99%). Where a base is missing or zero the rows' percentages are summed.
+    """
     if not rows:
         return {}
     agg = dict(rows[0])
@@ -305,7 +312,8 @@ def _aggregate_rows(rows: list[dict], report_base: str) -> dict:
 
     agg["n"] = int(_sum("n"))
     for f in ("valid_pct", "eligible_pct", "total_pct"):
-        agg[f] = round(_sum(f), 2)
+        base = _num(agg.get(f.replace("_pct", "_n")))
+        agg[f] = round(agg["n"] / base * 100.0, 10) if base else round(_sum(f), 2)
     return agg
 
 
@@ -666,8 +674,11 @@ function rrInit() {
     var agg = {};
     for (var k in rows[0]) { agg[k] = rows[0][k]; }
     agg.n = Math.trunc(sumField(rows, "n"));
+    // Summed count over the base, not a sum of rounded percentages, which drifts
+    // (five rows can total 99.99%). Port of _aggregate_rows.
     ["valid_pct", "eligible_pct", "total_pct"].forEach(function (f) {
-      agg[f] = round2(sumField(rows, f));
+      var base = Number(agg[f.replace("_pct", "_n")]) || 0;
+      agg[f] = base ? agg.n / base * 100 : round2(sumField(rows, f));
     });
     return agg;
   }
@@ -2162,30 +2173,174 @@ if (document.readyState === "loading") {
 """
 
 
+def writein_counts(text_rows: list[dict[str, str]]) -> list[tuple[str, int]]:
+    """Verbatim write-ins collapsed to (response, count), most frequent first."""
+    counts: Counter = Counter()
+    for r in text_rows:
+        value = (r.get("text_response") or "").strip()
+        if value:
+            counts[value] += 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def _render_writein_table(text_rows: list[dict[str, str]]) -> str:
     """Render write-in / 'Other' responses for a question as a separate table.
 
     Verbatim responses are aggregated to (response, count) so duplicates
     collapse, and shown apart from the parent question's choice frequencies.
     """
-    counts: Counter = Counter()
-    for r in text_rows:
-        value = (r.get("text_response") or "").strip()
-        if value:
-            counts[value] += 1
+    counts = writein_counts(text_rows)
     if not counts:
         return ""
-    body = "".join(
-        f"<tr><td>{_esc(text)}</td><td class=\"num\">{n}</td></tr>"
-        for text, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    )
-    total = sum(counts.values())
+    body = "".join(f"<tr><td>{_esc(text)}</td><td class=\"num\">{n}</td></tr>" for text, n in counts)
+    total = sum(n for _t, n in counts)
     return (
         f'<div class="meta">Write-in responses ({total})</div>'
         '<table class="writein"><thead><tr><th>Write-in response</th>'
         '<th class="num">Count</th></tr></thead>'
         f"<tbody>{body}</tbody></table>"
     )
+
+
+def flat_layout(rows: list[dict], presentation: dict, missing_rows: list[dict] | None = None) -> dict:
+    """What a flat (ungrouped) table shows, independent of the output format.
+
+    Shared by the HTML and Word renderers so the two cannot disagree about which
+    rows appear or where the Total and Missing rows go. ``entries`` is the body
+    in display order as (kind, row) pairs, kind being "response", "total" or
+    "missing".
+    """
+    report_base = rows[0].get("report_base", "") if rows else ""
+    shown = _apply_hidden(rows, presentation.get("hide_codes") or [])
+    if not shown:  # every option hidden; fall back to the unfiltered table
+        shown = rows
+    entries: list[tuple[str, dict]] = [("response", r) for r in shown]
+    response_total = presentation.get("response_total", False)
+    if response_total:
+        total = ("total", _aggregate_rows(shown, report_base))
+        entries = [total, *entries] if response_total == "before" else [*entries, total]
+    # Pinned last, after any Total: a non-answer is not a response option, so it
+    # is neither summed into the Total nor part of the Valid base.
+    if presentation.get("include_missing"):
+        entries.extend(("missing", r) for r in missing_rows or [])
+    return {
+        "report_base": report_base,
+        "stats": presentation.get("stats") or _DEFAULT_FLAT_STATS,
+        "show_code": presentation.get("show_code", True),
+        "decimals": presentation.get("pct_decimals", 2),
+        "shown": shown,
+        "hidden": len(rows) - len(shown),
+        "has_attribute": any((r.get("attribute") or "").strip() for r in shown),
+        "entries": entries,
+    }
+
+
+def grouped_layout(
+    rows: list[dict],
+    presentation: dict,
+    overall_rows: list[dict] | None = None,
+    missing_rows: list[dict] | None = None,
+    overall_missing: list[dict] | None = None,
+) -> dict:
+    """The crosstab a grouped table shows, independent of the output format.
+
+    ``groups`` is the group axis as (code, label, base_n), with an optional
+    Overall level; ``resp_axis`` is the response axis as (attr, code, label),
+    with the Total marker (attr "__total__") and Missing entries (code
+    _MISSING_CODE) in place. ``data(gcode, attr, code)`` returns the row behind
+    a cell, or None for an empty one.
+    """
+    report_base = rows[0].get("report_base", "eligible") if rows else "eligible"
+    n_field = _N_FIELD.get(report_base, "eligible_n")
+    hide_codes = presentation.get("hide_codes") or []
+    overall_opt = presentation.get("overall", False)
+    response_total = presentation.get("response_total", False)
+
+    # Per-group row lists (in appearance order) and their base sizes.
+    group_rows: dict[str, list[dict]] = {}
+    group_order: list[str] = []
+    for r in rows:
+        gc = r.get("group_codes", "")
+        if gc not in group_rows:
+            group_rows[gc] = []
+            group_order.append(gc)
+        group_rows[gc].append(r)
+    if hide_codes:
+        # Each group column is its own little table, so Valid n rebases within
+        # the group rather than across the crosstab.
+        group_rows = {gc: (_apply_hidden(rs, hide_codes) or rs) for gc, rs in group_rows.items()}
+        if overall_rows:
+            overall_rows = _apply_hidden(overall_rows, hide_codes) or overall_rows
+        rows = [r for gc in group_order for r in group_rows[gc]]
+
+    # Group axis: (code, label, base_n). Optionally inject an Overall level.
+    groups = [
+        (gc, group_rows[gc][0].get("group_labels", ""), group_rows[gc][0].get(n_field, ""))
+        for gc in group_order
+    ]
+    overall_rows = overall_rows or []
+    if overall_opt and overall_rows:
+        ov = ("__overall__", "Overall", overall_rows[0].get(n_field, ""))
+        groups = [ov, *groups] if overall_opt == "before" else [*groups, ov]
+
+    # Response axis: (attr, code, label). First-seen across grouped (then overall).
+    opts: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for r in list(rows) + overall_rows:
+        key = (r.get("attribute", ""), r.get("response_code", ""))
+        if key not in seen:
+            seen.add(key)
+            opts.append((r.get("attribute", ""), r.get("response_code", ""), r.get("response_label", "")))
+    has_attr = any(a for a, _c, _l in opts)
+
+    grouped_idx = {
+        (r.get("group_codes", ""), r.get("attribute", ""), r.get("response_code", "")): r
+        for r in rows
+    }
+    overall_idx = {(r.get("attribute", ""), r.get("response_code", "")): r for r in overall_rows}
+    group_total = {gc: _aggregate_rows(group_rows[gc], report_base) for gc in group_order}
+    overall_total = _aggregate_rows(overall_rows, report_base) if overall_rows else None
+
+    # Missing rows are keyed by attribute alone (they have no response code) and
+    # live on their own pinned axis entries, after any Total.
+    missing_idx = {(r.get("group_codes", ""), r.get("attribute", "")): r for r in (missing_rows or [])}
+    overall_missing_idx = {r.get("attribute", ""): r for r in (overall_missing or [])}
+
+    def data(gcode: str, attr: str, code: str) -> dict | None:
+        if code == _MISSING_CODE:
+            if gcode == "__overall__":
+                return overall_missing_idx.get(attr)
+            return missing_idx.get((gcode, attr))
+        is_total = attr == "__total__"
+        if gcode == "__overall__":
+            return overall_total if is_total else overall_idx.get((attr, code))
+        return group_total.get(gcode) if is_total else grouped_idx.get((gcode, attr, code))
+
+    TOTAL = ("__total__", "", "Total")
+    resp_axis = list(opts)
+    if response_total == "before":
+        resp_axis = [TOTAL, *resp_axis]
+    elif response_total == "after":
+        resp_axis = [*resp_axis, TOTAL]
+    if presentation.get("include_missing") and missing_rows:
+        missing_attrs: list[str] = []
+        for r in missing_rows:
+            if r.get("attribute", "") not in missing_attrs:
+                missing_attrs.append(r.get("attribute", ""))
+        resp_axis.extend((a, _MISSING_CODE, _MISSING_LABEL) for a in missing_attrs)
+        has_attr = has_attr or any(missing_attrs)
+
+    return {
+        "report_base": report_base,
+        "stats": presentation.get("stats") or _DEFAULT_CELL_STATS,
+        "show_code": presentation.get("show_code", True),
+        "orientation": presentation.get("orientation", "columns"),
+        "decimals": presentation.get("pct_decimals", 2),
+        "groups": groups,
+        "resp_axis": resp_axis,
+        "has_attr": has_attr,
+        "data": data,
+    }
 
 
 def _render_question_section(
@@ -2203,17 +2358,14 @@ def _render_question_section(
     question_text = first.get("question_text", "")
     qtype = first.get("question_type", "")
     scale = first.get("scale_type", "")
-    report_base = first.get("report_base", "")
-
-    show_code = presentation.get("show_code", True)
-    stats = presentation.get("stats") or _DEFAULT_FLAT_STATS
-    response_total = presentation.get("response_total", False)
-    decimals = presentation.get("pct_decimals", 2)
+    layout = flat_layout(rows, presentation, missing_rows)
+    report_base = layout["report_base"]
+    show_code = layout["show_code"]
+    stats = layout["stats"]
+    decimals = layout["decimals"]
     all_rows = rows
-    rows = _apply_hidden(rows, presentation.get("hide_codes") or [])
-    if not rows:  # every option hidden; fall back to the unfiltered table
-        rows = all_rows
-    has_attribute = any((r.get("attribute") or "").strip() for r in rows)
+    rows = layout["shown"]
+    has_attribute = layout["has_attribute"]
     featured = _PCT_FIELD.get(report_base)
     star_bases = sum(1 for s in stats if _stat_field(s, report_base).endswith("_pct")) > 1
 
@@ -2243,27 +2395,19 @@ def _render_question_section(
         out += f"<td>{_esc(r.get('response_label'))}</td>"
         return out
 
-    def _total_row() -> str:
-        agg = _aggregate_rows(rows, report_base)
-        span = (1 if has_attribute else 0) + (1 if show_code else 0)
-        lead = (f'<td colspan="{span}"></td>' if span else "") + "<td><strong>Total</strong></td>"
-        return _row_html(lead, agg)
-
     body = []
-    if response_total == "before":
-        body.append(_total_row())
-    body.extend(_row_html(_label_cells(r), r) for r in rows)
-    if response_total == "after":
-        body.append(_total_row())
-    # Pinned last, after any Total: a non-answer is not a response option, so it
-    # is neither summed into the Total nor part of the Valid base.
-    if presentation.get("include_missing"):
-        for r in missing_rows or []:
+    for kind, r in layout["entries"]:
+        if kind == "total":
+            span = (1 if has_attribute else 0) + (1 if show_code else 0)
+            lead = (f'<td colspan="{span}"></td>' if span else "") + "<td><strong>Total</strong></td>"
+        elif kind == "missing":
             lead = f"<td>{_esc(r.get('attribute'))}</td>" if has_attribute else ""
             if show_code:
                 lead += "<td></td>"
             lead += f"<td><em>{_esc(_MISSING_LABEL)}</em></td>"
-            body.append(_row_html(lead, r))
+        else:
+            lead = _label_cells(r)
+        body.append(_row_html(lead, r))
 
     badge = '<span class="badge">conditional</span>' if conditional else ""
     meta = (
@@ -2324,94 +2468,20 @@ def _render_grouped_section(
     first = rows[0]
     question_id = first.get("question_id") or slug
     question_text = first.get("question_text", "")
-    report_base = first.get("report_base", "eligible")
     group_keys = first.get("group_keys", "")
-    n_field = _N_FIELD.get(report_base, "eligible_n")
-
-    stats = presentation.get("stats") or _DEFAULT_CELL_STATS
-    show_code = presentation.get("show_code", True)
-    orientation = presentation.get("orientation", "columns")
-    overall_opt = presentation.get("overall", False)
-    response_total = presentation.get("response_total", False)
-    decimals = presentation.get("pct_decimals", 2)
-    hide_codes = presentation.get("hide_codes") or []
+    layout = grouped_layout(rows, presentation, overall_rows, missing_rows, overall_missing)
+    report_base = layout["report_base"]
+    stats = layout["stats"]
+    show_code = layout["show_code"]
+    orientation = layout["orientation"]
+    decimals = layout["decimals"]
+    groups, resp_axis, has_attr = layout["groups"], layout["resp_axis"], layout["has_attr"]
     # Kept unfiltered for the embedded blob, so the browser can undo hiding.
     all_rows = rows
     all_overall_rows = overall_rows
 
-    # Per-group row lists (in appearance order) and their base sizes.
-    group_rows: dict[str, list[dict]] = {}
-    group_order: list[str] = []
-    for r in rows:
-        gc = r.get("group_codes", "")
-        if gc not in group_rows:
-            group_rows[gc] = []
-            group_order.append(gc)
-        group_rows[gc].append(r)
-    if hide_codes:
-        # Each group column is its own little table, so Valid n rebases within
-        # the group rather than across the crosstab.
-        group_rows = {gc: (_apply_hidden(rs, hide_codes) or rs) for gc, rs in group_rows.items()}
-        if overall_rows:
-            overall_rows = _apply_hidden(overall_rows, hide_codes) or overall_rows
-        rows = [r for gc in group_order for r in group_rows[gc]]
-
-    # Group axis: (code, label, base_n). Optionally inject an Overall level.
-    groups = [
-        (gc, group_rows[gc][0].get("group_labels", ""), group_rows[gc][0].get(n_field, ""))
-        for gc in group_order
-    ]
-    overall_rows = overall_rows or []
-    if overall_opt and overall_rows:
-        ov = ("__overall__", "Overall", overall_rows[0].get(n_field, ""))
-        groups = [ov, *groups] if overall_opt == "before" else [*groups, ov]
-
-    # Response axis: (attr, code, label). First-seen across grouped (then overall).
-    opts: list[tuple[str, str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for r in list(rows) + overall_rows:
-        key = (r.get("attribute", ""), r.get("response_code", ""))
-        if key not in seen:
-            seen.add(key)
-            opts.append((r.get("attribute", ""), r.get("response_code", ""), r.get("response_label", "")))
-    has_attr = any(a for a, _c, _l in opts)
-
-    grouped_idx = {
-        (r.get("group_codes", ""), r.get("attribute", ""), r.get("response_code", "")): r
-        for r in rows
-    }
-    overall_idx = {(r.get("attribute", ""), r.get("response_code", "")): r for r in overall_rows}
-    group_total = {gc: _aggregate_rows(group_rows[gc], report_base) for gc in group_order}
-    overall_total = _aggregate_rows(overall_rows, report_base) if overall_rows else None
-
-    # Missing rows are keyed by attribute alone (they have no response code) and
-    # live on their own pinned axis entries, after any Total.
-    missing_idx = {(r.get("group_codes", ""), r.get("attribute", "")): r for r in (missing_rows or [])}
-    overall_missing_idx = {r.get("attribute", ""): r for r in (overall_missing or [])}
-
-    def _data(gcode: str, attr: str, code: str, is_total: bool) -> dict | None:
-        if code == _MISSING_CODE:
-            if gcode == "__overall__":
-                return overall_missing_idx.get(attr)
-            return missing_idx.get((gcode, attr))
-        if gcode == "__overall__":
-            return overall_total if is_total else overall_idx.get((attr, code))
-        return group_total.get(gcode) if is_total else grouped_idx.get((gcode, attr, code))
-
-    # Build the ordered response axis with optional Total marker.
-    TOTAL = ("__total__", "", "Total")
-    resp_axis = list(opts)
-    if response_total == "before":
-        resp_axis = [TOTAL, *resp_axis]
-    elif response_total == "after":
-        resp_axis = [*resp_axis, TOTAL]
-    if presentation.get("include_missing") and missing_rows:
-        missing_attrs: list[str] = []
-        for r in missing_rows:
-            if r.get("attribute", "") not in missing_attrs:
-                missing_attrs.append(r.get("attribute", ""))
-        resp_axis.extend((a, _MISSING_CODE, _MISSING_LABEL) for a in missing_attrs)
-        has_attr = has_attr or any(missing_attrs)
+    def _data(gcode: str, attr: str, code: str, _is_total: bool) -> dict | None:
+        return layout["data"](gcode, attr, code)
 
     def _resp_label(attr: str, code: str, label: str) -> str:
         if code == _MISSING_CODE:
@@ -2518,8 +2588,40 @@ def _load_writeins(text_dir: Path) -> dict[str, list[dict[str, str]]]:
     return grouped
 
 
-def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None) -> Path:
-    """Read a run directory's frequency CSVs and write report.html."""
+@dataclass
+class RunTable:
+    """One frequency table of a run, with everything a renderer needs."""
+
+    slug: str
+    qkey: str
+    is_grouped: bool
+    rows: list[dict[str, str]]
+    presentation: dict
+    conditional: bool
+    universe: list[dict] | None
+    missing: list[dict] | None
+    overall_rows: list[dict[str, str]] | None = None   # grouped tables only
+    overall_missing: list[dict] | None = None          # grouped tables only
+
+
+@dataclass
+class RunData:
+    """A run directory as the report layer reads it: CSVs plus manifest."""
+
+    run_dir: Path
+    manifest: dict
+    tables: list[RunTable] = field(default_factory=list)
+    writeins: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+
+
+def load_run(run_dir: str | Path) -> RunData:
+    """Read a run directory's frequency CSVs and manifest, in survey order.
+
+    Shared by every renderer (HTML, Word), so they read one data contract the
+    same way: presentation and frequency options merged over the defaults, Missing
+    rows split out of the CSV rows, and each grouped table paired with its
+    question's ungrouped rows for the Overall column.
+    """
     run_dir = Path(run_dir)
     freq_dir = run_dir / "frequency_tables"
     if not freq_dir.is_dir():
@@ -2532,7 +2634,6 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     freq_opts_map = manifest.get("table_frequency_opts") or {}
     universe_map = manifest.get("table_code_universe") or {}
     missing_map: dict[str, list[dict]] = dict(manifest.get("table_missing_rows") or {})
-    data_path = manifest.get("data_path", "(unknown)")
 
     # Overall (ungrouped) rows by question_key, for the optional Overall column.
     overall_by_qkey: dict[str, list[dict[str, str]]] = {}
@@ -2567,6 +2668,26 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
             **(freq_opts_map.get(slug) or {}),
         }
 
+    tables = [
+        RunTable(
+            slug=slug, qkey=qkey, is_grouped=is_grouped, rows=rows,
+            presentation=_presentation(slug), conditional=qkey in conditional,
+            universe=universe_map.get(slug), missing=missing_map.get(slug),
+            overall_rows=overall_by_qkey.get(qkey) if is_grouped else None,
+            overall_missing=missing_map.get(qkey) if is_grouped else None,
+        )
+        for _, slug, qkey, is_grouped, rows in blocks
+    ]
+    return RunData(run_dir, manifest, tables, _load_writeins(run_dir / "open_text_outputs"))
+
+
+def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None) -> Path:
+    """Read a run directory's frequency CSVs and write report.html."""
+    run = load_run(run_dir)
+    run_dir = run.run_dir
+    data_path = run.manifest.get("data_path", "(unknown)")
+    blocks = [(None, t.slug, t.qkey, t.is_grouped, t.rows) for t in run.tables]
+
     def _index_label(rows: list[dict[str, str]]) -> str:
         qid = rows[0].get("question_id") or ""
         gk = (rows[0].get("group_keys") or "").strip()
@@ -2577,19 +2698,18 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
         f"&mdash; {_esc((rows[0].get('question_text') or '')[:60])}</li>"
         for _, slug, _qkey, _ig, rows in blocks
     )
-    writeins = _load_writeins(run_dir / "open_text_outputs")
+    writeins = run.writeins
     sections = "".join(
         _render_grouped_section(
-            slug, rows, qkey in conditional, _presentation(slug),
-            overall_by_qkey.get(qkey), universe_map.get(slug),
-            missing_map.get(slug), missing_map.get(qkey),
+            t.slug, t.rows, t.conditional, t.presentation,
+            t.overall_rows, t.universe, t.missing, t.overall_missing,
         )
-        if is_grouped
+        if t.is_grouped
         else _render_question_section(
-            qkey, rows, qkey in conditional, writeins.get(qkey, []), _presentation(slug), slug,
-            universe_map.get(slug), missing_map.get(slug),
+            t.qkey, t.rows, t.conditional, writeins.get(t.qkey, []), t.presentation, t.slug,
+            t.universe, t.missing,
         )
-        for _, slug, qkey, is_grouped, rows in blocks
+        for t in run.tables
     )
     # Render any write-ins whose parent question has no frequency table of its own.
     rendered_qkeys = {qkey for _, _slug, qkey, _ig, _rows in blocks}
