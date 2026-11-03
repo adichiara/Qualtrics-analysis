@@ -248,3 +248,11 @@ def test_include_empty_codes_on_a_table_spec_warns():
     issues = validate_config(cfg, _column_map())
     assert _errors(issues) == []
     assert any("include_empty_codes" in msg for level, _w, msg in issues if level == "warning")
+
+
+def test_code_order_is_an_accepted_sort_by():
+    for value in ("code_asc", "code_desc"):
+        cfg = {"questions": {"QID2": {"sort_by": value}}}
+        assert _errors(validate_config(cfg, _column_map())) == []
+    bad = {"questions": {"QID2": {"sort_by": "code_sideways"}}}
+    assert any("sort_by" in m for _w, m in _errors(validate_config(bad, _column_map())))
