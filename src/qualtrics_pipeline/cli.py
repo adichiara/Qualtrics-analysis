@@ -268,7 +268,7 @@ SORT_BY_CHOICES = ["auto", "survey_order", "count_desc", "count_asc", "response_
 PERCENT_BASE_CHOICES = ["eligible", "valid", "total"]
 STAT_ORDER = ["n", "pct", "valid_n", "valid_pct", "eligible_n", "eligible_pct", "total_n", "total_pct", "base_n"]
 STAT_LABELS = {
-    "n": "n (count)", "pct": "% (featured base)", "valid_n": "Valid n", "valid_pct": "Valid %",
+    "n": "Count", "pct": "% (featured base)", "valid_n": "Valid n", "valid_pct": "Valid %",
     "eligible_n": "Eligible n", "eligible_pct": "Eligible %", "total_n": "Total n",
     "total_pct": "Total %", "base_n": "n (featured base)",
 }
