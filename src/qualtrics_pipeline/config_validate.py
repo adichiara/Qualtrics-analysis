@@ -45,7 +45,7 @@ TABLE_IGNORED_KEYS = {
     "include_missing",
 }
 
-KNOWN_TOP_LEVEL = {"defaults", "questions", "only"}
+KNOWN_TOP_LEVEL = {"defaults", "questions", "only", "word"}
 
 Issue = tuple[str, str, str]  # (level, location, message)
 
@@ -202,7 +202,15 @@ def validate_config(config: Any, column_map: list[dict[str, Any]]) -> list[Issue
 
     for k in config:
         if not _is_comment_key(k) and k not in KNOWN_TOP_LEVEL:
-            err("(root)", f"unknown top-level key {k!r} (expected: defaults, questions, only)")
+            err("(root)", f"unknown top-level key {k!r} (expected: defaults, questions, only, word)")
+
+    # Word document style: its own vocabulary, owned by the Word renderer.
+    if "word" in config:
+        from .word_report import validate_style
+
+        for msg in validate_style(config["word"]):
+            where, _, text = msg.partition(": ")
+            err(where, text)
 
     by_col = {m["column"]: m for m in column_map}
     valid_qkeys = {_question_key(m) for m in column_map}
