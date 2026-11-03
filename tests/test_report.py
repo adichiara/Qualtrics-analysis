@@ -801,3 +801,27 @@ def test_include_missing_is_a_question_level_config_key() -> None:
     assert "include_missing: !!state.include_missing" in script
     table_keys = script.split('var TABLE_KEYS = ')[1].split("];")[0]
     assert "include_missing" not in table_keys
+
+def test_hide_picker_offers_codes_nobody_chose() -> None:
+    from qualtrics_pipeline.report import _code_choices
+
+    rows = [{"response_code": "1", "response_label": "Yes"}]
+    universe = [{"column": "Q", "attribute": "", "multi_select": False,
+                 "codes": [["1", "Yes"], ["2", "No"], ["-1", "Other"]]}]
+    # The list must not change when zero-response rows are switched on, so it
+    # covers every code the table *can* show, not only the ones it does.
+    got = _code_choices(rows, universe)
+    assert [c["code"] for c in got] == ["-1", "1", "2"]
+    assert {c["code"]: c["label"] for c in got}["-1"] == "Other"
+
+
+def test_row_order_control_offers_every_configurable_order() -> None:
+    """The control and the frequencies stage must know the same orders."""
+    import json as _json
+
+    from qualtrics_pipeline.frequencies import SORT_BY_VALUES
+    from qualtrics_pipeline.report import _constants_blob
+
+    blob = _constants_blob().split(">", 1)[1].rsplit("</script>", 1)[0]
+    row_orders = _json.loads(blob)["row_orders"]
+    assert {o[0] for o in row_orders} == SORT_BY_VALUES
