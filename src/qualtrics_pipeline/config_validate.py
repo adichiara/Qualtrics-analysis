@@ -31,6 +31,7 @@ KNOWN_QUESTION_KEYS = {
     "include", "sort_by", "frequency_mode", "percent_base", "response_order",
     "text_entry_columns", "tables", "show_code", "orientation", "overall",
     "response_total", "stats", "pct_decimals", "hide_codes", "include_empty_codes",
+    "include_missing",
 }
 # Options honored on an individual table spec.
 KNOWN_TABLE_KEYS = {
@@ -41,6 +42,7 @@ KNOWN_TABLE_KEYS = {
 TABLE_IGNORED_KEYS = {
     "percent_base", "sort_by", "response_order", "frequency_mode", "include",
     "tables", "text_entry_columns", "include_empty_codes",
+    "include_missing",
 }
 
 KNOWN_TOP_LEVEL = {"defaults", "questions", "only"}
@@ -129,8 +131,9 @@ def _check_block(
 
     if "include" in block and not isinstance(block["include"], bool):
         err(where, "include must be true or false")
-    if "include_empty_codes" in block and not isinstance(block["include_empty_codes"], bool):
-        err(where, "include_empty_codes must be true or false")
+    for key in ("include_empty_codes", "include_missing"):
+        if key in block and not isinstance(block[key], bool):
+            err(where, f"{key} must be true or false")
     if "response_order" in block and not isinstance(block["response_order"], list):
         err(where, "response_order must be a list")
 
