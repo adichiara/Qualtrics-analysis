@@ -89,10 +89,10 @@ def test_flat_table_rows_with_total_and_missing(tmp_path) -> None:
     table = next(t for t in _doc(out).tables if _table_text(t)[0][-1] == "Eligible %")
     rows = _table_text(table)
     assert rows[0] == ["Code", "Response", "Count", "Valid %", "Eligible %"]
-    assert rows[1] == ["1", "Yes", "5", "62.50%", "50.00%"]
-    assert rows[3] == ["", "Total", "8", "100.00%", "80.00%"]
+    assert rows[1] == ["1", "Yes", "5", "62.5%", "50.0%"]
+    assert rows[3] == ["", "Total", "8", "100.0%", "80.0%"]
     # Missing comes last, after the Total, with Valid % left blank.
-    assert rows[4] == ["", "Missing", "2", "", "20.00%"]
+    assert rows[4] == ["", "Missing", "2", "", "20.0%"]
     assert table.rows[4].cells[1].paragraphs[0].runs[0].italic
 
 
@@ -111,7 +111,7 @@ def test_crosstab_has_a_column_per_group_and_overall(tmp_path) -> None:
     assert head == ["Code", "Response", "Army\nn = 6", "Navy\nn = 4", "Overall\nn = 10"]
     rows = _table_text(crosstab)
     yes = next(r for r in rows if r[1] == "Yes")
-    assert yes[2:] == ["3\n50.00%", "2\n50.00%", "5\n50.00%"]
+    assert yes[2:] == ["3\n50.0%", "2\n50.0%", "5\n50.0%"]
     assert any(p.text.startswith("By G: G text") for p in doc.paragraphs)
 
 
@@ -218,8 +218,8 @@ def test_rating_matrix_is_a_grid_of_items_by_scale_points(tmp_path) -> None:
     rows = _table_text(_doc(out).tables[0])
     # Scale points in survey order, then Total and Missing as columns.
     assert rows[0] == ["Item", "Low\n(1)", "Medium\n(2)", "High\n(3)", "Total", "Missing"]
-    assert rows[1] == ["Speed", "2\n50.00%", "1\n25.00%", "1\n25.00%", "4\n100.00%", "0\n0.00%"]
-    assert rows[2] == ["Cost", "1\n25.00%", "—", "2\n50.00%", "3\n75.00%", "1\n25.00%"]
+    assert rows[1] == ["Speed", "2\n50.0%", "1\n25.0%", "1\n25.0%", "4\n100.0%", "0\n0.0%"]
+    assert rows[2] == ["Cost", "1\n25.0%", "—", "2\n50.0%", "3\n75.0%", "1\n25.0%"]
 
 
 def test_matrix_grid_gets_a_valid_n_column_on_the_valid_base(tmp_path) -> None:
@@ -297,10 +297,30 @@ def test_matrix_headers_are_horizontal_with_equal_scale_columns(tmp_path) -> Non
     assert not any(_is_rotated(c) for c in head)
     scale_widths = {round(c.width.inches, 3) for c in head[1:8]}
     assert len(scale_widths) == 1  # every scale point the same width
-    # Long labels carry soft hyphens so Word breaks them once, cleanly;
-    # Total and Missing are never hyphenated.
-    assert "­" in head[2].text
-    assert [head[8].text, head[9].text] == ["Total", "Missing"]
+    # Whole words only: nothing is hyphenated.
+    assert not any("\u00ad" in c.text or "-\n" in c.text for c in head)
+
+
+def test_missing_moves_under_the_grid_when_it_would_squeeze_it(tmp_path) -> None:
+    doc = _doc(_seven_point(tmp_path))
+    head = [c.text for c in doc.tables[0].rows[0].cells]
+    assert head[-1] == "Total" and "Missing" not in head
+    note = next(p.text for p in doc.paragraphs if p.text.startswith("Missing (shown"))
+    assert "Durability 7 (20.0%)" in note
+
+
+def test_missing_policy_column_keeps_the_column(tmp_path) -> None:
+    doc = _doc(_seven_point(tmp_path, word={"matrices": {"missing": "column"}}))
+    head = [c.text for c in doc.tables[0].rows[0].cells]
+    assert head[-1] == "Missing"
+    assert not any(p.text.startswith("Missing (shown") for p in doc.paragraphs)
+
+
+def test_missing_policy_note_always_uses_the_note(tmp_path) -> None:
+    out = _matrix(tmp_path, {"include_missing": True}, word={"matrices": {"missing": "note"}})
+    doc = _doc(out)
+    assert "Missing" not in [c.text for c in doc.tables[0].rows[0].cells]
+    assert any(p.text.startswith("Missing (shown") and "Cost 1 (25.0%)" in p.text for p in doc.paragraphs)
 
 
 def test_matrix_headers_sideways_on_request(tmp_path) -> None:
@@ -317,16 +337,3 @@ def test_numeric_scale_labels_still_make_a_grid(tmp_path) -> None:
     rows = [{"R": "1", "N_1": "1", "N_2": "5"}, {"R": "2", "N_1": "3", "N_2": "4"}]
     out = _run(tmp_path, {"QN": {"sort_by": "survey_order"}}, rows, cmap)
     assert _table_text(_doc(out).tables[0])[0] == ["Item", "1", "2", "3", "4", "5"]
-
-
-def test_hyphenation_breaks_at_syllables() -> None:
-    from qualtrics_pipeline.word_report import _hyphenate
-
-    def shown(w):
-        return _hyphenate(w, 9, 0).replace("­", "-")
-
-    assert shown("Dissatisfied") == "Dis-satis-fied"
-    assert shown("disagree") == "dis-agree"
-    assert shown("Neither") == "Nei-ther"
-    # A word that fits is left alone.
-    assert _hyphenate("Dissatisfied", 9, 5.0) == "Dissatisfied"

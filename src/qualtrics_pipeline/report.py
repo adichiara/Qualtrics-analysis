@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .frequencies import PCT_DECIMALS_MAX, STAT_KEYS
+from .frequencies import PCT_DECIMALS_DEFAULT, PCT_DECIMALS_MAX, STAT_KEYS
 
 # Columns carried per question (constant across its rows) vs. per response row.
 _QUESTION_LEVEL = ("question_key", "question_id", "question_text", "question_type")
@@ -45,7 +45,7 @@ def _natural_question_key(question_id: str, question_key: str) -> tuple:
     return (1, [], question_id or question_key)
 
 
-def _fmt_pct(value: str, decimals: int = 2) -> str:
+def _fmt_pct(value: str, decimals: int = PCT_DECIMALS_DEFAULT) -> str:
     try:
         return f"{float(value):.{decimals}f}%"
     except (ValueError, TypeError):
@@ -108,7 +108,7 @@ _DEFAULT_CELL_STATS = ["n", "pct"]
 _PRES_DEFAULT = {
     "show_code": True, "orientation": "columns",
     "overall": False, "response_total": False, "stats": None,
-    "pct_decimals": 2, "hide_codes": [],
+    "pct_decimals": PCT_DECIMALS_DEFAULT, "hide_codes": [],
 }
 # Written by the frequencies stage, which owns them: they decide which rows exist
 # rather than how existing rows look. The manifest keeps them in their own map;
@@ -245,6 +245,7 @@ def _constants_blob() -> str:
         "alias_stats": sorted(_STAT_CHIP_LABEL),
         "report_bases": _REPORT_BASES,
         "pct_decimals_max": PCT_DECIMALS_MAX,
+        "pct_decimals_default": PCT_DECIMALS_DEFAULT,
         # Accepted values, so the browser validates a pasted config against the
         # same vocabulary the config validator uses.
         "stat_keys": sorted(STAT_KEYS),
@@ -284,7 +285,7 @@ def _stat_label(stat: str, report_base: str) -> str:
     return _STAT_LABEL.get(stat, stat)
 
 
-def _stat_value(row: dict | None, stat: str, report_base: str, decimals: int = 2) -> str:
+def _stat_value(row: dict | None, stat: str, report_base: str, decimals: int = PCT_DECIMALS_DEFAULT) -> str:
     field = _stat_field(stat, report_base)
     val = (row or {}).get(field, "")
     return _fmt_pct(val, decimals) if field.endswith("_pct") else _esc(val)
@@ -317,7 +318,7 @@ def _aggregate_rows(rows: list[dict], report_base: str) -> dict:
     return agg
 
 
-def _cell_html(row: dict | None, stats: list[str], report_base: str, decimals: int = 2) -> str:
+def _cell_html(row: dict | None, stats: list[str], report_base: str, decimals: int = PCT_DECIMALS_DEFAULT) -> str:
     if row is None:
         return '<td class="num">&mdash;</td>'
     if len(stats) == 1:
@@ -477,7 +478,7 @@ function rrInit() {
     if (raw === null || raw === undefined || raw === "") { return ""; }
     var n = Number(raw);
     if (Number.isNaN(n)) { return String(raw); }
-    return n.toFixed(decimals === undefined ? 2 : decimals) + "%";
+    return n.toFixed(decimals === undefined ? constants.pct_decimals_default : decimals) + "%";
   }
   function statValue(row, stat, reportBase, decimals) {
     var field = statField(stat, reportBase);
@@ -1762,7 +1763,7 @@ function rrInit() {
       show_code: !!pres.show_code,
       stats: (pres.stats && pres.stats.length) ? pres.stats.slice() : constants.default_flat_stats.slice(),
       response_total: pres.response_total || false,
-      pct_decimals: pres.pct_decimals === undefined ? 2 : pres.pct_decimals,
+      pct_decimals: pres.pct_decimals === undefined ? constants.pct_decimals_default : pres.pct_decimals,
       hide_codes: (pres.hide_codes || []).slice(),
       percent_base: sdata.report_base,
       include_empty_codes: !!pres.include_empty_codes,
@@ -1888,7 +1889,7 @@ function rrInit() {
       overall: hasOverall ? (pres.overall || false) : false,
       response_total: pres.response_total || false,
       stats: (pres.stats && pres.stats.length) ? pres.stats.slice() : constants.default_cell_stats.slice(),
-      pct_decimals: pres.pct_decimals === undefined ? 2 : pres.pct_decimals,
+      pct_decimals: pres.pct_decimals === undefined ? constants.pct_decimals_default : pres.pct_decimals,
       hide_codes: (pres.hide_codes || []).slice(),
       percent_base: sdata.report_base,
       include_empty_codes: !!pres.include_empty_codes,
@@ -2227,7 +2228,7 @@ def flat_layout(rows: list[dict], presentation: dict, missing_rows: list[dict] |
         "report_base": report_base,
         "stats": presentation.get("stats") or _DEFAULT_FLAT_STATS,
         "show_code": presentation.get("show_code", True),
-        "decimals": presentation.get("pct_decimals", 2),
+        "decimals": presentation.get("pct_decimals", PCT_DECIMALS_DEFAULT),
         "shown": shown,
         "hidden": len(rows) - len(shown),
         "has_attribute": any((r.get("attribute") or "").strip() for r in shown),
@@ -2335,7 +2336,7 @@ def grouped_layout(
         "stats": presentation.get("stats") or _DEFAULT_CELL_STATS,
         "show_code": presentation.get("show_code", True),
         "orientation": presentation.get("orientation", "columns"),
-        "decimals": presentation.get("pct_decimals", 2),
+        "decimals": presentation.get("pct_decimals", PCT_DECIMALS_DEFAULT),
         "groups": groups,
         "resp_axis": resp_axis,
         "has_attr": has_attr,

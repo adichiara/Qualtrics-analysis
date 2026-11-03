@@ -218,13 +218,15 @@ STAT_KEYS = {
     "n", "valid_n", "valid_pct", "eligible_n", "eligible_pct",
     "total_n", "total_pct", "pct", "base_n",
 }
+# Decimal places on displayed percentages unless a table says otherwise.
+PCT_DECIMALS_DEFAULT = 1
 PRESENTATION_DEFAULTS = {
     "show_code": True,
     "orientation": "columns",   # group levels as columns; "rows" transposes
     "overall": False,           # False | "before" | "after"
     "response_total": False,    # False | "before" | "after"
     "stats": None,              # None -> renderer default
-    "pct_decimals": 2,          # decimal places on displayed percentages
+    "pct_decimals": PCT_DECIMALS_DEFAULT,  # decimal places on displayed percentages
     "hide_codes": [],           # response codes to omit from the table (e.g. N/A)
 }
 # Percentages are stored full-precision in the CSV and rounded only for display,
@@ -414,7 +416,7 @@ def _config_reference() -> dict[str, str]:
         "percent_base": f"{pct_opts} - featured denominator (valid=answered, eligible=shown per display logic, total=all respondents)",
         "show_code": "true|false - show the response-code column in the report",
         "stats": f"list from: {stat_opts} (omit/empty = report default)",
-        "pct_decimals": f"0-{PCT_DECIMALS_MAX} - decimal places on displayed percentages (default 2)",
+        "pct_decimals": f"0-{PCT_DECIMALS_MAX} - decimal places on displayed percentages (default {PCT_DECIMALS_DEFAULT})",
         "hide_codes": (
             "list of response codes to omit from the table, e.g. [\"-1\"] for an N/A option. "
             "Valid n (and Valid %) rebase onto the responses still shown; Eligible/Total % are "
