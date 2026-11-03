@@ -602,7 +602,7 @@ def test_include_empty_codes_is_a_question_level_config_key() -> None:
     script = report_mod._SCRIPT
     # Emitted in the question block, never in a table spec.
     assert "include_empty_codes: !!state.include_empty_codes" in script
-    assert '"include_empty_codes", "include_missing"];' in script
+    assert '"include_empty_codes", "include_missing", "word"];' in script
     table_keys = script.split('var TABLE_KEYS = ')[1].split("];")[0]
     assert "include_empty_codes" not in table_keys
 
@@ -668,7 +668,8 @@ def test_every_browser_drivable_config_key_has_a_control() -> None:
     # Keys the browser cannot act on: text_reporting_mode is per column and
     # "tables"/"group_by" build a table that does not exist yet, both of which
     # need the frequencies stage to run before there is anything to show.
-    not_offered = {"tables", "text_entry_columns", "frequency_mode"}
+    # "word" is the Word document's style: carried through the export, not shown.
+    not_offered = {"tables", "text_entry_columns", "frequency_mode", "word"}
     assert KNOWN_QUESTION_KEYS - covered == not_offered
 
 
