@@ -223,17 +223,23 @@ Layout:
   The scale columns all get the same width. Their labels are horizontal by default
   and wrap only between words — never mid-word. When a label word will not fit,
   the item column narrows (to `item_min_width_inches`), then the header font
-  shrinks (to `header_min_size`). A matrix is never split across tables: if the
-  grid still cannot fit, each item becomes its own vertical frequency table
-  (Code / Response / Count / %, with its own Total and Missing rows) under a
-  sub-heading naming the item. With `include_missing`, the Missing counts take a
+  shrinks (to `header_min_size`). The item column is only as wide as its labels
+  need (and at least as wide as their longest word), so the scale gets the rest.
+  Whether a grid fits is worked out from those widths — there is no fixed limit
+  on scale points (`max_columns`, default null, can set one). A matrix is never
+  split across tables: if the grid still cannot fit — or the question's rows are
+  not all coded answers to named items, e.g. a typed-in "Other" among them —
+  each item becomes its own vertical frequency table (Code / Response / Count /
+  %, with its own Total and Missing rows), titled with the item's name in the
+  question-heading style. The item is never a column of a long table unless you
+  ask for `"layout": "list"`. With `include_missing`, the Missing counts take a
   column when there is room; when the column is what would squeeze the headers
   or stop the grid fitting, they go in a line under the table instead
   (`"missing": "auto"`; or force `"column"` / `"note"`).
   `"header_rotation": "always"` turns the labels sideways instead, and `"auto"`
   keeps them horizontal when they fit and turns them when not.
   `"layout": "items"` always uses one table per item; `"list"` gives a single
-  long item × answer table.
+  long item × answer table with an Attribute column.
 - The Total row is bold with a rule above it; the Missing row is italic and last.
 - A select-all question lists its options as the responses, rather than repeating
   "Selected" on every row.
@@ -279,7 +285,7 @@ Page, fonts, title and numbering stay document-wide. Every setting is optional:
   "crosstabs": { "header_rotation": "auto",  // auto | always | never
                  "rotate_at_columns": 8, "header_max_height_inches": 1.5 },
   "matrices": { "layout": "grid",           // grid | items | list
-                "max_columns": 12,           // more scale points than this -> items
+                "max_columns": null,         // null = as many as fit; more -> items
                 "header_rotation": "never",  // never (horizontal) | auto | always (sideways)
                 "header_min_size": 7,        // smallest header font when fitting labels
                 "item_min_width_inches": 0.9,  // the item column narrows no further
@@ -293,6 +299,26 @@ The table styling draws on the
 [Qualtrics document generator](https://github.com/adichiara/Qualtrics-document-generator)
 and on the border themes, spacing presets and Likert grid from the earlier
 reporting demo notebook.
+
+### Question titles
+
+Each question is headed by its number (the export tag, e.g. `Q4.21`) and its
+text. Three question-level keys change that, in both reports:
+
+```jsonc
+"QID55": {
+  "question_number": "4.21",            // instead of "Q4.21"
+  "question_text": "Fit of the FR IHWCU", // instead of the survey's wording
+  "show_question_number": false          // hide the number (can also go in "defaults")
+}
+```
+
+The HTML report has the same three as controls on each table ("Question number",
+"Question text", "Show question number"), plus "Show question numbers" for the
+whole report; the headings change as you type and the exported config carries
+them. In the Word report, `word.questions.numbering` (`survey` | `sequential` |
+`off`) sets the numbering scheme, and a question's own `question_number` or
+`show_question_number` overrides it.
 
 ## HTML validation report
 

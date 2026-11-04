@@ -402,3 +402,73 @@ def test_html_report_carries_word_blocks_into_its_config_export(tmp_path) -> Non
     assert blob["word"] == {"matrices": {"layout": "list"}}
     constants = json.loads(html.split('id="rr-constants">')[1].split("</script>")[0])
     assert constants["word_style"] == {"tables": {"theme": "grid"}}
+
+
+# ---------------------------------------------------------------------------
+# Grid by default; anything else with items is one titled table per item
+# ---------------------------------------------------------------------------
+
+_FIT = {"1": "Much too short", "2": "Too short", "3": "Just right", "4": "Too long", "5": "Much too long"}
+
+
+def _fit_matrix(tmp_path, extra_cols=(), extra_rows=None, q=None):
+    cmap = [_col(f"F_{i}", "QF", "Q4.21", _FIT, "Likert", "Matrix", sub=sub)
+            for i, sub in enumerate(["Sleeve length", "Torso length", "Trouser length"], start=1)]
+    cmap += list(extra_cols)
+    rows = [{"R": str(r), "F_1": str(r % 5 + 1), "F_2": str((r + 2) % 5 + 1), "F_3": str((r + 4) % 5 + 1),
+             **(extra_rows(r) if extra_rows else {})} for r in range(40)]
+    cfg = {"sort_by": "survey_order", "response_total": "after", "include_missing": True, **(q or {})}
+    return _run(tmp_path, {"QF": cfg}, rows, cmap)
+
+
+def test_five_point_matrix_with_total_and_missing_is_one_grid(tmp_path) -> None:
+    doc = _doc(_fit_matrix(tmp_path))
+    assert len(doc.tables) == 1
+    head = [c.text.replace("\n", " ") for c in doc.tables[0].rows[0].cells]
+    assert head == ["Item", "Much too short (1)", "Too short (2)", "Just right (3)", "Too long (4)",
+                    "Much too long (5)", "Total", "Missing"]
+    # The item column is only as wide as its labels need.
+    assert doc.tables[0].rows[0].cells[0].width.inches < 1.5
+
+
+def test_items_that_cannot_be_a_grid_get_a_titled_table_each(tmp_path) -> None:
+    # A typed-in answer among the rows (no item, verbatim "code") rules out a grid.
+    other = {**_col("F_3_TEXT", "QF", "Q4.21", {}, "Likert", "Matrix", sub=""),
+             "is_text_entry_suffix": True, "text_reporting_mode": "frequency_text"}
+    out = _fit_matrix(tmp_path, extra_cols=[other],
+                      extra_rows=lambda r: {"F_3_TEXT": "too baggy" if r < 2 else ""},
+                      q={"text_entry_columns": {"F_3_TEXT": {"text_reporting_mode": "frequency_text"}}})
+    doc = _doc(out)
+    heads = [_table_text(t)[0] for t in doc.tables]
+    assert all("Attribute" not in h for h in heads)     # never an item column
+    texts = [p.text for p in doc.paragraphs]
+    for item in ("Sleeve length", "Torso length", "Trouser length"):
+        assert item in texts                               # each table titled
+
+
+# ---------------------------------------------------------------------------
+# Question text / number overrides
+# ---------------------------------------------------------------------------
+
+def test_question_text_and_number_can_be_changed(tmp_path) -> None:
+    out = _basic(tmp_path, {"question_text": "Agreement", "question_number": "A1"})
+    doc = _doc(out)
+    assert any(p.text == "A1. Agreement" for p in doc.paragraphs)
+    html = (out / "report.html").read_text()
+    assert '<span class="rr-qnum">A1</span>' in html and '<span class="qtext">Agreement</span>' in html
+
+
+def test_question_number_can_be_hidden(tmp_path) -> None:
+    out = _basic(tmp_path, {"show_question_number": False})
+    assert any(p.text == "Do you agree?" for p in _doc(out).paragraphs)
+    assert '<span class="rr-qnum"></span>' in (out / "report.html").read_text()
+
+
+def test_question_display_options_are_validated() -> None:
+    cmap = [_col("Q1", "QA", "Q1", {"1": "Yes"})]
+    issues = validate_config({"defaults": {"question_text": "Same for all"},
+                              "questions": {"QA": {"question_number": 5, "show_question_number": "no"}}}, cmap)
+    msgs = {(lvl, m) for lvl, _w, m in issues}
+    assert ("error", "question_number must be text") in msgs
+    assert ("error", "show_question_number must be true or false") in msgs
+    assert any(lvl == "warning" and "question_text" in m for lvl, m in msgs)

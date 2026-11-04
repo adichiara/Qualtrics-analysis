@@ -22,7 +22,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .frequencies import PCT_DECIMALS_DEFAULT, PCT_DECIMALS_MAX, STAT_KEYS
+from .frequencies import (
+    PCT_DECIMALS_DEFAULT,
+    PCT_DECIMALS_MAX,
+    QUESTION_DISPLAY_DEFAULTS,
+    STAT_KEYS,
+)
 
 # Columns carried per question (constant across its rows) vs. per response row.
 _QUESTION_LEVEL = ("question_key", "question_id", "question_text", "question_type")
@@ -152,6 +157,25 @@ def _is_mutually_exclusive(rows: list[dict]) -> bool:
 
 
 _BASE_NAME = {"valid": "Valid", "eligible": "Eligible", "total": "Total"}
+
+
+def question_title(rows: list[dict], presentation: dict, fallback: str = "") -> tuple[str, str]:
+    """(number, text) a question is titled with, after the config's overrides.
+
+    The number is the export tag (Q4.21) unless question_number replaces it, and
+    empty when show_question_number is off; the text is the survey wording unless
+    question_text replaces it. Shared by the HTML and Word reports.
+    """
+    first = rows[0] if rows else {}
+    number = presentation.get("question_number")
+    if number is None:
+        number = first.get("question_id") or fallback
+    if presentation.get("show_question_number") is False:
+        number = ""
+    text = presentation.get("question_text")
+    if text is None:
+        text = first.get("question_text", "")
+    return number, text
 
 
 def _base_caption(rows: list[dict], report_base: str, hidden: int) -> str:
@@ -394,6 +418,8 @@ th.rr-sortable .rr-arrow { color: #57606a; font-size: 0.75rem; margin-left: 0.2r
 .rr-snippet-part + .rr-snippet-part { margin-top: 0.6rem; padding-top: 0.5rem;
                                        border-top: 1px solid #e1e4e8; }
 .rr-tools input.rr-num { width: 4rem; font-size: 0.85rem; }
+.rr-tools input.rr-text { width: 6rem; font-size: 0.85rem; }
+.rr-tools input.rr-text-wide { width: 22rem; max-width: 60vw; }
 .rr-hide summary { font-size: 0.85rem; font-weight: 600; cursor: pointer; }
 /* Write-in responses arrive as their own "code", so a question can offer dozens
    of long verbatim choices; cap the list and clip each label to keep it usable. */
@@ -1164,6 +1190,24 @@ function rrInit() {
     };
   }
 
+  // A free-text field. It commits on change (Enter or leaving the box) rather
+  // than per keystroke, and an empty box means "as the survey has it".
+  function addText(row, labelText, value, placeholder, onChange, wide) {
+    var label = document.createElement("label");
+    label.className = "rr-field";
+    label.appendChild(document.createTextNode(labelText));
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = wide ? "rr-text rr-text-wide" : "rr-text";
+    input.value = value || "";
+    input.placeholder = placeholder || "";
+    input.addEventListener("change", function () {
+      onChange(input.value.trim() === "" ? null : input.value);
+    });
+    label.appendChild(input);
+    row.appendChild(label);
+    return input;
+  }
   function addNumber(row, labelText, value, min, max, onChange) {
     var label = document.createElement("label");
     label.className = "rr-field";
@@ -1366,6 +1410,9 @@ function rrInit() {
     for (var k in sc.keys) { cfg[k] = sc.keys[k]; }
     // The Word document's style for this question: not a control here, but kept
     // so the exported config still has it.
+    cfg.show_question_number = state.show_question_number !== false;
+    if (state.question_number != null) { cfg.question_number = state.question_number; }
+    if (state.question_text != null) { cfg.question_text = state.question_text; }
     if (state.word && Object.keys(state.word).length) { cfg.word = state.word; }
     return { cfg: cfg, note: sc.note };
   }
@@ -1399,7 +1446,8 @@ function rrInit() {
   var TABLE_KEYS = ["show_code", "orientation", "overall", "response_total",
                     "stats", "pct_decimals", "hide_codes"];
   var QUESTION_KEYS = ["include", "percent_base", "sort_by", "response_order",
-                       "include_empty_codes", "include_missing", "word"];
+                       "include_empty_codes", "include_missing", "word",
+                       "show_question_number", "question_number", "question_text"];
   function inList(v, list) { return list.indexOf(v) !== -1; }
   function readConfig(obj, kind) {
     var out = { values: {}, errors: [], ignored: [] };
@@ -1413,6 +1461,7 @@ function rrInit() {
       switch (key) {
         case "show_code":
         case "include":
+        case "show_question_number":
           if (typeof v !== "boolean") { out.errors.push(key + " must be true or false"); }
           else { out.values[key] = v; }
           break;
@@ -1423,6 +1472,11 @@ function rrInit() {
           if (typeof v !== "boolean") { out.errors.push(key + " must be true or false"); break; }
           out.values.include_empty_codes = v;
           if (v) { out.ignored.push("include_empty_codes: zero-response rows are added when the CSV is written"); }
+          break;
+        case "question_number":
+        case "question_text":
+          if (v !== null && typeof v !== "string") { out.errors.push(key + " must be text"); }
+          else { out.values[key] = v; }
           break;
         case "word":
           // Word document style: kept for the export, nothing to show here.
@@ -1649,6 +1703,15 @@ function rrInit() {
     var hasMissing = !!ctx.hasMissing;
     return [
       { key: "include", kind: "bool", label: "Show this table", global: "Show all tables" },
+      { key: "show_question_number", kind: "bool", label: "Show question number",
+        global: "Show question numbers" },
+      // Per question only: a heading's own wording means nothing to the next one.
+      { key: "question_number", kind: "text", label: "Question number", local: true,
+        placeholder: ctx.questionId || "",
+        title: "Shown instead of the export tag. Leave empty for the survey's own." },
+      { key: "question_text", kind: "text", label: "Question text", local: true, wide: true,
+        placeholder: ctx.questionText || "",
+        title: "Shown instead of the survey's wording. Leave empty for the survey's own." },
       { key: "show_code", kind: "bool", label: "Show code column", global: "Show code columns" },
       { key: "include_empty_codes", kind: "bool", label: "Zero-response codes",
         disabled: !hasUniverse,
@@ -1685,6 +1748,8 @@ function rrInit() {
     var label = mixed ? (sp.global || sp.label) : sp.label;
     if (sp.kind === "bool") {
       el = addCheckbox(row, label, !!initial, onSet);
+    } else if (sp.kind === "text") {
+      el = addText(row, label, initial, sp.placeholder, onSet, sp.wide);
     } else if (sp.kind === "number") {
       el = addNumber(row, label, initial === undefined ? "" : initial, 0,
         constants.pct_decimals_max, onSet);
@@ -1702,7 +1767,9 @@ function rrInit() {
     return el;
   }
   function syncOption(el, sp, value) {
-    if (sp.kind === "bool") {
+    if (sp.kind === "text") {
+      el.value = value || "";
+    } else if (sp.kind === "bool") {
       el.indeterminate = value === undefined;
       el.checked = value === undefined ? false : !!value;
     } else if (sp.kind === "number") {
@@ -1736,7 +1803,7 @@ function rrInit() {
       }, false);
       // A disabled control has nothing to offer a global one, and registering it
       // would let "apply to all" write a value this table cannot honor.
-      if (!sp.disabled) {
+      if (!sp.disabled && !sp.local) {
         registerGlobal(sp.key, function (v) {
           write(sp, v);
           // The table's own control has to move too, or it goes on reporting the
@@ -1762,6 +1829,22 @@ function rrInit() {
     return details;
   }
 
+  // The section heading follows the question_number / question_text /
+  // show_question_number options, so what you see is what the config will say.
+  function titleUpdater(tableEl, sdata) {
+    var section = tableEl.closest("section");
+    var numEl = section && section.querySelector(".rr-qnum");
+    var textEl = section && section.querySelector(".qtext");
+    var byEl = section && section.querySelector(".rr-by");
+    return function (state) {
+      var num = state.question_number != null ? state.question_number : sdata.question_id;
+      if (state.show_question_number === false) { num = ""; }
+      if (numEl) { numEl.textContent = num; }
+      if (textEl) { textEl.textContent = state.question_text != null ? state.question_text : (sdata.question_text || ""); }
+      if (byEl) { byEl.textContent = (num ? " \u2014 by " : "By ") + (sdata.group_keys || ""); }
+    };
+  }
+
   // ---- per-section wiring ----
   function initFlatSection(toolsEl, slug) {
     var dataNode = document.getElementById(slug + "-data");
@@ -1778,6 +1861,9 @@ function rrInit() {
       percent_base: sdata.report_base,
       include_empty_codes: !!pres.include_empty_codes,
       include_missing: !!pres.include_missing,
+      show_question_number: pres.show_question_number !== false,
+      question_number: pres.question_number == null ? null : pres.question_number,
+      question_text: pres.question_text == null ? null : pres.question_text,
       // What the CSV is already sorted by, so the control starts by describing
       // the table rather than proposing a change to it.
       row_order: pres.sort_by || "count_desc",
@@ -1791,6 +1877,9 @@ function rrInit() {
       percent_base: effective.percent_base,
       include_empty_codes: effective.include_empty_codes,
       include_missing: effective.include_missing,
+      show_question_number: effective.show_question_number,
+      question_number: effective.question_number,
+      question_text: effective.question_text,
       word: sdata.word || null,
       row_order: effective.row_order,
       response_order: [],
@@ -1798,6 +1887,7 @@ function rrInit() {
       sort: null,
     };
     var hasAttr = hasAttributeIn(sdata.rows);
+    var updateTitle = titleUpdater(tableEl, sdata);
     // Hiding a table leaves its heading and controls in place, so it can be
     // brought back; only the data itself goes.
     var hideables = [tableEl].concat(Array.prototype.slice.call(
@@ -1806,6 +1896,7 @@ function rrInit() {
     if (!metaEl || !metaEl.classList || !metaEl.classList.contains("meta")) { metaEl = null; }
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
     function rerender() {
+      updateTitle(state);
       hideables.forEach(function (el) { el.hidden = !state.include; });
       renderFlatTable(tableEl, sdata.rows, state.percent_base, state, state.sort, onSort, sdata.universe,
         sdata.missing);
@@ -1828,6 +1919,7 @@ function rrInit() {
     var row1 = document.createElement("div");
     row1.className = "rr-row";
     var specs = optionSpecs({ grouped: false, universe: sdata.universe,
+                              questionId: sdata.question_id, questionText: sdata.question_text,
                               hasMissing: !!(sdata.missing && sdata.missing.length),
                               hasCustomOrder: state.row_order === "response_order" });
     var syncOpts = buildOptionRow(row1, specs, state, rerender);
@@ -1905,6 +1997,9 @@ function rrInit() {
       percent_base: sdata.report_base,
       include_empty_codes: !!pres.include_empty_codes,
       include_missing: !!pres.include_missing,
+      show_question_number: pres.show_question_number !== false,
+      question_number: pres.question_number == null ? null : pres.question_number,
+      question_text: pres.question_text == null ? null : pres.question_text,
       // What the CSV is already sorted by, so the control starts by describing
       // the table rather than proposing a change to it.
       row_order: pres.sort_by || "count_desc",
@@ -1920,6 +2015,9 @@ function rrInit() {
       percent_base: effective.percent_base,
       include_empty_codes: effective.include_empty_codes,
       include_missing: effective.include_missing,
+      show_question_number: effective.show_question_number,
+      question_number: effective.question_number,
+      question_text: effective.question_text,
       word: sdata.word || null,
       row_order: effective.row_order,
       response_order: [],
@@ -1932,7 +2030,9 @@ function rrInit() {
     // Switching orientation swaps which axis the rows are, so a sort key from the
     // previous orientation no longer addresses a real column.
     function onSort(key) { state.sort = nextSort(state.sort, key); rerender(); }
+    var updateTitle = titleUpdater(tableEl, sdata);
     function rerender() {
+      updateTitle(state);
       tableEl.hidden = !state.include;
       lastPivot = renderGrouped(tableEl, sdata, state, state.sort, onSort);
       if (metaEl) {
@@ -1949,6 +2049,7 @@ function rrInit() {
     var row1 = document.createElement("div");
     row1.className = "rr-row";
     var specs = optionSpecs({ grouped: true, universe: sdata.universe, hasOverall: hasOverall,
+                              questionId: sdata.question_id, questionText: sdata.question_text,
                               hasMissing: !!(sdata.missing && sdata.missing.length),
                               hasCustomOrder: state.row_order === "response_order" });
     var syncOpts = buildOptionRow(row1, specs, state, function () {
@@ -2373,7 +2474,7 @@ def _render_question_section(
 ) -> str:
     first = rows[0]
     question_id = first.get("question_id") or qkey
-    question_text = first.get("question_text", "")
+    number, shown_text = question_title(rows, presentation, question_id)
     qtype = first.get("question_type", "")
     scale = first.get("scale_type", "")
     layout = flat_layout(rows, presentation, missing_rows)
@@ -2437,6 +2538,7 @@ def _render_question_section(
     data_blob = _json_script(
         {
             "kind": "flat",
+            "question_text": first.get("question_text", ""),
             "question_id": question_id,
             "question_key": qkey,
             "meta_prefix": f"Type: {qtype} \u00b7 Scale: {scale}",
@@ -2459,8 +2561,8 @@ def _render_question_section(
     )
     return (
         f'<section id="{_esc(qkey)}">'
-        f'<h2>{_esc(question_id)}{badge}<a class="top" href="#top">top</a><br>'
-        f'<span class="qtext">{_esc(question_text)}</span></h2>'
+        f'<h2><span class="rr-qnum">{_esc(number)}</span>{badge}<a class="top" href="#top">top</a><br>'
+        f'<span class="qtext">{_esc(shown_text)}</span></h2>'
         f'<div class="meta">{meta}</div>'
         f"{tools_div}{data_blob}"
         f'<table id="{_esc(slug)}-table" class="rr-table"><thead><tr>{"".join(header_cells)}</tr></thead>'
@@ -2489,7 +2591,7 @@ def _render_grouped_section(
     """
     first = rows[0]
     question_id = first.get("question_id") or slug
-    question_text = first.get("question_text", "")
+    number, shown_text = question_title(rows, presentation, question_id)
     group_keys = first.get("group_keys", "")
     layout = grouped_layout(rows, presentation, overall_rows, missing_rows, overall_missing)
     report_base = layout["report_base"]
@@ -2565,6 +2667,7 @@ def _render_grouped_section(
     data_blob = _json_script(
         {
             "kind": "grouped",
+            "question_text": first.get("question_text", ""),
             "question_id": question_id,
             "question_key": first.get("question_key") or slug,
             "group_by": [g for g in group_keys.split(" | ") if g],
@@ -2588,9 +2691,10 @@ def _render_grouped_section(
     )
     return (
         f'<section id="{_esc(slug)}">'
-        f'<h2>{_esc(question_id)} &mdash; by {_esc(group_keys)}{badge}'
+        f'<h2><span class="rr-qnum">{_esc(number)}</span>'
+        f'<span class="rr-by">{" &mdash; by " if number else "By "}{_esc(group_keys)}</span>{badge}'
         f'<a class="top" href="#top">top</a><br>'
-        f'<span class="qtext">{_esc(question_text)}</span></h2>'
+        f'<span class="qtext">{_esc(shown_text)}</span></h2>'
         f'<div class="meta rr-meta">{meta}</div>'
         f"{tools_div}{data_blob}"
         f'<table id="{_esc(slug)}-table" class="rr-table crosstab"><thead><tr>{head}</tr></thead>'
@@ -2659,6 +2763,7 @@ def load_run(run_dir: str | Path) -> RunData:
     universe_map = manifest.get("table_code_universe") or {}
     missing_map: dict[str, list[dict]] = dict(manifest.get("table_missing_rows") or {})
     word_map = manifest.get("table_word_style") or {}
+    display_map = manifest.get("table_question_display") or {}
 
     # Overall (ungrouped) rows by question_key, for the optional Overall column.
     overall_by_qkey: dict[str, list[dict[str, str]]] = {}
@@ -2691,6 +2796,8 @@ def load_run(run_dir: str | Path) -> RunData:
             **_FREQ_DEFAULT,
             **(presentation_map.get(slug) or {}),
             **(freq_opts_map.get(slug) or {}),
+            **QUESTION_DISPLAY_DEFAULTS,
+            **(display_map.get(slug) or {}),
         }
 
     tables = [
@@ -2714,16 +2821,15 @@ def generate_html_report(run_dir: str | Path, out_path: str | Path | None = None
     data_path = run.manifest.get("data_path", "(unknown)")
     blocks = [(None, t.slug, t.qkey, t.is_grouped, t.rows) for t in run.tables]
 
-    def _index_label(rows: list[dict[str, str]]) -> str:
-        qid = rows[0].get("question_id") or ""
-        gk = (rows[0].get("group_keys") or "").strip()
-        return f"{qid} — by {gk}" if gk else qid
+    def _index_item(t: RunTable) -> str:
+        # The contents list names a question even when its number is hidden, so
+        # it falls back to the export tag there.
+        number, text = question_title(t.rows, {**t.presentation, "show_question_number": True}, t.slug)
+        gk = (t.rows[0].get("group_keys") or "").strip()
+        label = f"{number} — by {gk}" if gk else number
+        return f'<li><a href="#{_esc(t.slug)}">{_esc(label)}</a> &mdash; {_esc(text[:60])}</li>'
 
-    index_items = "".join(
-        f'<li><a href="#{_esc(slug)}">{_esc(_index_label(rows))}</a> '
-        f"&mdash; {_esc((rows[0].get('question_text') or '')[:60])}</li>"
-        for _, slug, _qkey, _ig, rows in blocks
-    )
+    index_items = "".join(_index_item(t) for t in run.tables)
     writeins = run.writeins
     sections = "".join(
         _render_grouped_section(

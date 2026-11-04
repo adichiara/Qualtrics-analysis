@@ -251,6 +251,26 @@ ROW_TYPE_MISSING = "missing"
 MISSING_LABEL = "Missing"
 
 
+# How a question is titled in the reports. null means "as the survey has it":
+# question_text replaces the wording, question_number replaces the number (its
+# export tag, e.g. "Q4.21"), show_question_number: false hides the number.
+QUESTION_DISPLAY_DEFAULTS: dict[str, Any] = {
+    "question_text": None,
+    "question_number": None,
+    "show_question_number": True,
+}
+
+
+def _resolve_question_display(cfg: dict) -> dict:
+    out = dict(QUESTION_DISPLAY_DEFAULTS)
+    for key in ("question_text", "question_number"):
+        if isinstance(cfg.get(key), str):
+            out[key] = cfg[key]
+    if isinstance(cfg.get("show_question_number"), bool):
+        out["show_question_number"] = cfg["show_question_number"]
+    return out
+
+
 def _stamp_frequency_opts(cfg: dict, mappings: list[dict[str, Any]]) -> dict:
     """Frequency-stage options as resolved for this question.
 
@@ -413,6 +433,9 @@ def _config_reference() -> dict[str, str]:
             "per matrix attribute; one per question for select-all. Never counted in the "
             "Total row. Question-level only; ignored on a table spec. Off by default."
         ),
+        "question_text": "text to show instead of the survey's question wording (both reports)",
+        "question_number": "text to show instead of the question's number, e.g. \"4.21\" for Q4.21",
+        "show_question_number": "true|false - show the question's number in front of its text (default true)",
         "percent_base": f"{pct_opts} - featured denominator (valid=answered, eligible=shown per display logic, total=all respondents)",
         "show_code": "true|false - show the response-code column in the report",
         "stats": f"list from: {stat_opts} (omit/empty = report default)",
@@ -725,6 +748,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                     "frequency": _stamp_frequency_opts(cfg, mappings),
                     "code_universe": _code_universe(mappings),
                     "word": cfg.get("word") or {},
+                    "display": _resolve_question_display(cfg),
                 }
                 continue
 
@@ -768,6 +792,7 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
                 "frequency": _stamp_frequency_opts(cfg, mappings),
                 "code_universe": _code_universe(mappings),
                 "word": cfg.get("word") or {},
+                "display": _resolve_question_display(cfg),
             }
 
     return tables, text_outputs, {"table_specs": table_meta, "grouping_warnings": warnings}
@@ -900,6 +925,13 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
             slug: meta["code_universe"]
             for slug, meta in report_meta["table_specs"].items()
             if tables.get(slug) and meta["code_universe"]
+        },
+        # How each question is titled (question_text / question_number /
+        # show_question_number), for both reports.
+        "table_question_display": {
+            slug: meta["display"]
+            for slug, meta in report_meta["table_specs"].items()
+            if tables.get(slug)
         },
         # Per-question Word style overrides (a question's "word" block).
         "table_word_style": {
