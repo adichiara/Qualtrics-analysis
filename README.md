@@ -211,7 +211,7 @@ Layout:
 
 - Each question gets a heading (its export tag and text), then its table, then a
   caption naming the percentage base. Its crosstabs follow under "By <question>"
-  sub-headings, and write-in responses follow in their own Response/Count table.
+  sub-headings. Typed-in "Other" answers follow as their own list (see below).
 - Tables use a border theme: `corporate` (default — dark outline and header rule,
   light lines between rows, none between columns), `minimal` (no outline),
   `boxed` (light outline) or `grid` (every line). Values are centred under their
@@ -319,6 +319,21 @@ whole report; the headings change as you type and the exported config carries
 them. In the Word report, `word.questions.numbering` (`survey` | `sequential` |
 `off`) sets the numbering scheme, and a question's own `question_number` or
 `show_question_number` overrides it.
+
+### Write-in ("Other") responses
+
+A typed-in answer is never a row of the question's table. The "Other (please
+specify)" option keeps its own row there, with its count; what people wrote follows
+underneath as "Written responses (n)" — a one-column list of the comments as
+written, with no header row and no counts. Both reports do this.
+
+Each write-in column's `text_reporting_mode` (in the question's
+`text_entry_columns`) decides whether it is listed: `summarize_later` (the default)
+lists it, `skip` leaves it out. `frequency_text` is still accepted and now means
+the same as `summarize_later`. Write-in columns are recognised by the exporter's
+flag or, in older column maps without it, by their `_TEXT` name. `write_ins.show`
+and `write_ins.max_rows` in the `word` block turn the list off or cap it in the
+Word report.
 
 ## HTML validation report
 

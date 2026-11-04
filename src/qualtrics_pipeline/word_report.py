@@ -47,7 +47,7 @@ from .report import (
     grouped_layout,
     load_run,
     question_title,
-    writein_counts,
+    writein_comments,
 )
 
 # ---------------------------------------------------------------------------
@@ -1128,24 +1128,20 @@ class _Writer:
         row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY if wanted > cap else WD_ROW_HEIGHT_RULE.AT_LEAST
 
     def writeins(self, rows: list[dict[str, str]]) -> None:
-        counts = writein_counts(rows)
-        if not counts:
+        """Typed-in "Other" answers as written: a one-column list of comments, with
+        no header row and no counts, under the question's table."""
+        comments = writein_comments(rows)
+        if not comments:
             return
         cap = self.style["write_ins"]["max_rows"]
-        shown = counts if cap is None else counts[:cap]
-        total = sum(n for _t, n in counts)
-        self._caption(f"Write-in responses ({total})", keep_with_next=True, space_before=8)
-        count_w = self.style["tables"]["stat_column_width_inches"]
-        text_w = max(1.5, min(5.0, self.width - count_w))
-        t = self._new_table(len(shown) + 1, [text_w, count_w])
-        self._set(t.rows[0].cells[0], "Response", bold=True)
-        self._set(t.rows[0].cells[1], "Count", bold=True, align=self._value_align)
-        for i, (text, n) in enumerate(shown, start=1):
+        shown = comments if cap is None else comments[:cap]
+        self._caption(f"Written responses ({len(comments)})", keep_with_next=True, space_before=8)
+        t = self._new_table(len(shown), [self.width])
+        for i, text in enumerate(shown):
             self._set(t.rows[i].cells[0], text)
-            self._set(t.rows[i].cells[1], str(n), align=self._value_align)
-        self._finish_table(t, ["response"] * len(shown))
-        if len(shown) < len(counts):
-            self._caption(f"{len(counts) - len(shown)} more distinct write-ins not shown.")
+        self._finish_table(t, ["response"] * len(shown), header_rows=0)
+        if len(shown) < len(comments):
+            self._caption(f"{len(comments) - len(shown)} more not shown.")
 
 
 # ---------------------------------------------------------------------------

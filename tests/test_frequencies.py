@@ -89,8 +89,12 @@ def test_real_fixture_text_column_frequency_mode(tmp_path) -> None:
     outdir = tmp_path / "out2"
     run_frequency_analysis(data_path, column_map_path, outdir, config_path, strict=False)
 
+    # A typed-in "Other" answer is never a row among the listed options, even in
+    # frequency_text mode: it goes to the write-in output instead.
     qid2_csv = outdir / "frequency_tables" / "QID2_frequencies.csv"
-    assert "Camp Zama" in qid2_csv.read_text(encoding="utf-8")
+    assert "Camp Zama" not in qid2_csv.read_text(encoding="utf-8")
+    writein = outdir / "open_text_outputs" / "QID2_Q1.5_3_TEXT_open_text.csv"
+    assert "Camp Zama" in writein.read_text(encoding="utf-8")
 
     manifest = json.loads((outdir / "frequency_manifest.json").read_text(encoding="utf-8"))
     assert "Q1.5_3_TEXT" not in manifest["skipped_text_entry_columns"]
@@ -802,8 +806,11 @@ def test_include_empty_codes_skips_text_columns_without_the_suffix_flag() -> Non
     text_col = _mc_col("Q_21_TEXT", _SORT_LABELS)
     rows = [{"Q": "1", "Q_21_TEXT": "handwritten"}]
     tables, _ = _empty_codes_run(rows, [_mc_col("Q", _SORT_LABELS), text_col], include_empty_codes=True)
-    text_rows = [r for r in tables["QSORT"] if r["column"] == "Q_21_TEXT"]
-    assert [r["response_code"] for r in text_rows] == ["handwritten"]
+    # Recognised by its _TEXT name all the same: never a row among the options
+    # (it is listed with the written responses instead), and never padded out
+    # with the parent's codes.
+    assert all(r["column"] != "Q_21_TEXT" for r in tables["QSORT"])
+    assert [r["response_code"] for r in tables["QSORT"]] == ["1", "2", "3"]
 
 
 # ---------------------------------------------------------------------------
