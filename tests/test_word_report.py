@@ -431,19 +431,32 @@ def test_five_point_matrix_with_total_and_missing_is_one_grid(tmp_path) -> None:
     assert doc.tables[0].rows[0].cells[0].width.inches < 1.5
 
 
-def test_items_that_cannot_be_a_grid_get_a_titled_table_each(tmp_path) -> None:
-    # A typed-in answer among the rows (no item, verbatim "code") rules out a grid.
+def test_items_layout_titles_each_table_and_has_no_item_column(tmp_path) -> None:
+    out = _fit_matrix(tmp_path, q={"word": {"matrices": {"layout": "items"}}})
+    doc = _doc(out)
+    assert len(doc.tables) == 3
+    assert all("Attribute" not in _table_text(t)[0] for t in doc.tables)
+    texts = [p.text for p in doc.paragraphs]
+    for item in ("Sleeve length", "Torso length", "Trouser length"):
+        assert item in texts
+
+
+def test_write_ins_are_a_separate_list_of_comments(tmp_path) -> None:
+    # Even in frequency_text mode the typed-in answers stay out of the option
+    # rows -- the matrix is still a grid -- and follow as a plain list.
     other = {**_col("F_3_TEXT", "QF", "Q4.21", {}, "Likert", "Matrix", sub=""),
              "is_text_entry_suffix": True, "text_reporting_mode": "frequency_text"}
     out = _fit_matrix(tmp_path, extra_cols=[other],
-                      extra_rows=lambda r: {"F_3_TEXT": "too baggy" if r < 2 else ""},
-                      q={"text_entry_columns": {"F_3_TEXT": {"text_reporting_mode": "frequency_text"}}})
+                      extra_rows=lambda r: {"F_3_TEXT": ["too baggy", "", "too baggy", "long arms"][r % 4]
+                                            if r < 4 else ""})
     doc = _doc(out)
-    heads = [_table_text(t)[0] for t in doc.tables]
-    assert all("Attribute" not in h for h in heads)     # never an item column
-    texts = [p.text for p in doc.paragraphs]
-    for item in ("Sleeve length", "Torso length", "Trouser length"):
-        assert item in texts                               # each table titled
+    assert _table_text(doc.tables[0])[0][0] == "Item"            # still a grid
+    comments = doc.tables[-1]
+    assert _table_text(comments) == [["too baggy"], ["too baggy"], ["long arms"]]
+    assert any(p.text == "Written responses (3)" for p in doc.paragraphs)
+    html = (out / "report.html").read_text()
+    assert "<th>Write-in response</th>" not in html
+    assert '<table class="writein"><tbody><tr><td>too baggy</td></tr>' in html
 
 
 # ---------------------------------------------------------------------------
