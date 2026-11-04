@@ -602,7 +602,8 @@ def test_include_empty_codes_is_a_question_level_config_key() -> None:
     script = report_mod._SCRIPT
     # Emitted in the question block, never in a table spec.
     assert "include_empty_codes: !!state.include_empty_codes" in script
-    assert '"include_empty_codes", "include_missing", "word"];' in script
+    question_keys = script.split("var QUESTION_KEYS = ")[1].split("];")[0]
+    assert '"include_empty_codes"' in question_keys and '"include_missing"' in question_keys
     table_keys = script.split('var TABLE_KEYS = ')[1].split("];")[0]
     assert "include_empty_codes" not in table_keys
 

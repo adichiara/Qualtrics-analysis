@@ -46,6 +46,7 @@ from .report import (
     flat_layout,
     grouped_layout,
     load_run,
+    question_title,
     writein_counts,
 )
 
@@ -107,7 +108,7 @@ DEFAULT_STYLE: dict[str, Any] = {
         #       fit one table; items: each item as its own vertical table;
         # list: one table, one row per item x answer.
         "layout": "grid",
-        "max_columns": 12,         # more distinct answers than this -> items
+        "max_columns": None,       # null = as many as fit; more than this -> items
         # Scale-point headers: never = horizontal, wrapped between words (the item
         # column narrows, then the header font shrinks toward header_min_size,
         # before anything else gives); always = sideways; auto = horizontal when
@@ -152,7 +153,8 @@ _ENUMS = {
 }
 _PAGE_SIZES = {"letter": (8.5, 11.0), "a4": (210 / 25.4, 297 / 25.4), "legal": (8.5, 14.0)}
 # Settings that may be null; every other default fixes the setting's type.
-_NULLABLE = {"title", "attribute_column_width_inches", "max_rows", "cell_padding_inches"}
+_NULLABLE = {"title", "attribute_column_width_inches", "max_rows", "cell_padding_inches",
+             "max_columns"}
 _INTEGER = {"rotate_at_columns", "keep_together_max_rows", "max_rows", "max_columns"}
 _ZERO_OK = {"cell_padding_inches", "space_before_pt"}
 
@@ -432,15 +434,16 @@ class _Writer:
     def question_heading(self, table, by_text: str | None) -> None:
         """The question's heading, once per question, then a sub-heading per breakout."""
         q = self.style["questions"]
-        first = table.rows[0]
         if table.qkey != self._last_qkey:
             self._last_qkey = table.qkey
             self.number += 1
-            label = {
-                "survey": f"{first.get('question_id') or table.qkey}.",
-                "sequential": f"{self.number}.",
-                "off": "",
-            }[q["numbering"]]
+            # A question's own question_number / show_question_number win over the
+            # document's numbering; question_text replaces the survey wording.
+            pres = table.presentation
+            number, text = question_title(table.rows, pres, table.qkey)
+            if pres.get("question_number") is None and number:
+                number = {"survey": number, "sequential": str(self.number), "off": ""}[q["numbering"]]
+            label = f"{number}." if number and not number.endswith(".") else number
             p = self.doc.add_paragraph()
             _zero_spacing(p, 1.05)
             p.paragraph_format.space_before = Pt(q["space_before_pt"])
@@ -450,7 +453,7 @@ class _Writer:
             size = self.style["fonts"]["question_size"]
             if label:
                 self._run(p, label + " ", size, bold=True)
-            self._run(p, _plain(first.get("question_text", "")), size, bold=q["bold"])
+            self._run(p, _plain(text), size, bold=q["bold"])
         if by_text:
             p = self.doc.add_paragraph()
             _zero_spacing(p)
@@ -605,15 +608,17 @@ class _Writer:
         options_only = has_attr and bool(coded) and all(
             str(r.get("response_label", "")) == "Selected" for r in coded
         )
-        is_matrix = (has_attr and not options_only and coded and len(coded) == len(responses)
-                     and all((r.get("attribute") or "").strip() for r in responses))
         layout = self.style["matrices"]["layout"]
-        if is_matrix and layout != "list":
+        if has_attr and not options_only and layout != "list":
+            # Rows that belong to items (a matrix). A grid when every row is a coded
+            # answer to a named item and the grid fits the page; otherwise one
+            # table per item. The item is never a column of a long table.
+            is_grid = (coded and len(coded) == len(responses)
+                       and all((r.get("attribute") or "").strip() for r in responses))
+            cap = self.style["matrices"]["max_columns"]
             n_points = len({r.get("response_code") for r in responses})
-            # A grid that cannot fit on one table becomes one table per item
-            # rather than continuing onto a second, split table.
-            if layout == "items" or n_points > self.style["matrices"]["max_columns"] \
-                    or not self.matrix_table(table, lay):
+            if not (layout == "grid" and is_grid and (cap is None or n_points <= cap)
+                    and self.matrix_table(table, lay)):
                 self.item_tables(table, lay)
             return
         # No column of nothing but blanks (see _code_shown).
@@ -641,14 +646,17 @@ class _Writer:
             elif kind == "missing":
                 missing_by[item] = r
         show_code = lay["show_code"] and any(_code_shown(r) for r in lay["shown"])
-        size = self.style["fonts"]["question_size"] - 1
+        size = self.style["fonts"]["question_size"]
         for item in items:
-            p = self.doc.add_paragraph()
-            _zero_spacing(p)
-            p.paragraph_format.space_before = Pt(6)
-            p.paragraph_format.space_after = Pt(2)
-            p.paragraph_format.keep_with_next = True
-            self._run(p, item, size, bold=True, color="#333333")
+            # The item's name titles its table, styled like the question text;
+            # rows with no item (a typed-in "Other") get a table without a title.
+            if item:
+                p = self.doc.add_paragraph()
+                _zero_spacing(p, 1.05)
+                p.paragraph_format.space_before = Pt(8)
+                p.paragraph_format.space_after = Pt(3)
+                p.paragraph_format.keep_with_next = True
+                self._run(p, item, size, bold=self.style["questions"]["bold"])
             entries: list[tuple[str, dict]] = [("response", r) for r in rows_by[item]]
             if total_pos:
                 total = ("total", _aggregate_rows(rows_by[item], base))
@@ -789,7 +797,7 @@ class _Writer:
             # pays for "100.0%".
             needs = [self._needed_width([grid_[item][j] for item in items], kind == "total")
                      for j, (_h, kind, _k) in enumerate(cols_)]
-            return grid_, self._matrix_geometry(cols_, needs)
+            return grid_, self._matrix_geometry(cols_, needs, items)
 
         # Missing goes last (before Valid n) as a column -- or, if that is what
         # makes the grid squeeze its headers or not fit, into a note under it.
@@ -853,11 +861,12 @@ class _Writer:
                           "; ".join(one(item) for item in items), space_before=0)
         return True
 
-    def _longest_word(self, headers: list[str], size: float) -> float:
+    def _longest_word(self, headers: list[str], size: float, bold: bool = True) -> float:
         """Narrowest column (text only) the headers fit in without breaking a word."""
-        return max((_text_width_in(w, size, True) for h in headers for w in h.split()), default=0.0)
+        return max((_text_width_in(w, size, bold) for h in headers for w in h.split()), default=0.0)
 
-    def _matrix_geometry(self, columns: list[tuple[str, str, str]], needs: list[float]):
+    def _matrix_geometry(self, columns: list[tuple[str, str, str]], needs: list[float],
+                         items: list[str] | None = None):
         """Column widths for a matrix grid: (item_w, {col: width}, panels, rotate, header size).
 
         Scale-point columns all get one width, so a rating scale reads evenly;
@@ -868,6 +877,7 @@ class _Writer:
         in "auto" the headers turn sideways. None when nothing fits: a matrix is
         never split into parts, it becomes one table per item instead.
         """
+        items = items or []
         mx, t = self.style["matrices"], self.style["tables"]
         table_size = self.style["fonts"]["table_size"]
         min_size = min(mx["header_min_size"], table_size)
@@ -878,8 +888,12 @@ class _Writer:
         heads = [columns[j][0] for j in scale]
         scale_need = max((needs[j] for j in scale), default=0.0)
         fixed_item = t["attribute_column_width_inches"]
-        item_min = fixed_item or min(mx["item_min_width_inches"], self.width / 3)
-        item_pref = fixed_item or max(item_min, min(3.0, self.width * 0.35))
+        # The item column must fit its longest word, and is never wider than its
+        # longest label needs: room it does not use goes to the scale columns.
+        item_word = self._longest_word(items, table_size, bold=False) + pad
+        item_full = max((_text_width_in(i, table_size) for i in items), default=0.0) + pad
+        item_min = fixed_item or min(max(mx["item_min_width_inches"], item_word), self.width / 3)
+        item_pref = fixed_item or max(item_min, min(3.0, self.width * 0.35, item_full))
 
         def other_widths(horizontal: bool, header_size: float) -> dict[int, float]:
             return {j: max(needs[j], (self._longest_word([columns[j][0]], header_size) + pad)
