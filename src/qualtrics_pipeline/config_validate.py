@@ -31,7 +31,7 @@ KNOWN_QUESTION_KEYS = {
     "include", "sort_by", "frequency_mode", "percent_base", "response_order",
     "text_entry_columns", "tables", "show_code", "orientation", "overall",
     "response_total", "stats", "pct_decimals", "hide_codes", "include_empty_codes",
-    "include_missing", "word",
+    "include_missing", "word", "question_text", "question_number", "show_question_number",
 }
 # Options honored on an individual table spec.
 KNOWN_TABLE_KEYS = {
@@ -42,7 +42,7 @@ KNOWN_TABLE_KEYS = {
 TABLE_IGNORED_KEYS = {
     "percent_base", "sort_by", "response_order", "frequency_mode", "include",
     "tables", "text_entry_columns", "include_empty_codes",
-    "include_missing", "word",
+    "include_missing", "word", "question_text", "question_number", "show_question_number",
 }
 
 KNOWN_TOP_LEVEL = {"defaults", "questions", "only", "word"}
@@ -137,6 +137,13 @@ def _check_block(
         for msg in validate_question_style(block["word"], f"{where}.word"):
             loc, _, text = msg.partition(": ")
             err(loc, text)
+    for key in ("question_text", "question_number"):
+        if key in block and not isinstance(block[key], str):
+            err(where, f"{key} must be text")
+        elif key in block and qkey is None:
+            warn(where, f"{key} in defaults would give every question the same {key.split('_')[1]}")
+    if "show_question_number" in block and not isinstance(block["show_question_number"], bool):
+        err(where, "show_question_number must be true or false")
     for key in ("include_empty_codes", "include_missing"):
         if key in block and not isinstance(block[key], bool):
             err(where, f"{key} must be true or false")
