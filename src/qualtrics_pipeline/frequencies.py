@@ -77,7 +77,7 @@ def _resolve_only(column_map: list[dict[str, Any]], only_list: Any) -> set[str] 
 def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
     questions: dict[str, dict[str, Any]] = {}
     for m in column_map:
-        if not _is_analyzable(m) and not m.get("is_text_entry_suffix"):
+        if not _is_analyzable(m) and not _is_write_in(m):
             continue
         qid = _question_key(m)
         if qid not in questions:
@@ -89,7 +89,7 @@ def build_default_config(column_map: list[dict[str, Any]]) -> dict[str, Any]:
                 "response_order": [],
                 "text_entry_columns": {},
             }
-        if m.get("is_text_entry_suffix"):
+        if _is_write_in(m):
             questions[qid]["text_entry_columns"][m["column"]] = {
                 "text_reporting_mode": m.get("text_reporting_mode", "summarize_later")
             }
@@ -107,7 +107,10 @@ def _question_looks_like(column: str) -> bool:
 
 def _text_mode_for(mapping: dict[str, Any], question_cfg: dict[str, Any]) -> str:
     per_col = (question_cfg.get("text_entry_columns") or {}).get(mapping["column"], {})
-    return per_col.get("text_reporting_mode", mapping.get("text_reporting_mode", "skip"))
+    # A write-in the column map does not mark (older exports) defaults to being
+    # listed, as the exporter's own default does for the ones it marks.
+    default = mapping.get("text_reporting_mode") or ("summarize_later" if _is_write_in(mapping) else "skip")
+    return per_col.get("text_reporting_mode", default)
 
 
 # Valid sort_by values and what they mean:
@@ -690,11 +693,12 @@ def generate_frequency_tables(rows, column_map, config, strict=False, display_lo
         cfg = dict(defaults)
         cfg.update(qcfgs.get(qkey, {}))
 
-        if m.get("is_text_entry_suffix"):
-            mode = _text_mode_for(m, cfg)
-            if mode == "frequency_text":
-                grouped[qkey].append(m)
-            elif mode == "summarize_later":
+        if _is_write_in(m):
+            # A typed-in "Other" answer is never a row among the listed options:
+            # the "Other" option keeps its own row there, and the text goes to the
+            # write-in output, shown as a list of comments under the question.
+            # frequency_text is still accepted and now means the same.
+            if _text_mode_for(m, cfg) in ("frequency_text", "summarize_later"):
                 text_outputs[qkey].append(m)
             continue
 
@@ -870,15 +874,6 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
 
     cols = list(rows[0].keys()) if rows else []
     by_col = {m["column"]: m for m in cmap}
-    mode_by_text_col = {}
-    defaults = config.get("defaults", {})
-    qcfgs = config.get("questions", {})
-    for m in cmap:
-        if m.get("is_text_entry_suffix"):
-            qkey = _question_key(m)
-            cfg = dict(defaults)
-            cfg.update(qcfgs.get(qkey, {}))
-            mode_by_text_col[m["column"]] = _text_mode_for(m, cfg)
     written_text_cols = {
         Path(path).name.split("_open_text.csv")[0].split("_", 1)[-1]
         for path in [str(p) for p in outs if "open_text_outputs" in str(p)]
@@ -890,7 +885,7 @@ def run_frequency_analysis(data_path, column_map_path, outdir, config_path, stri
         "analyzed_columns": [c for c in cols if c in by_col and _is_analyzable(by_col[c])],
         "skipped_metadata_columns": [c for c in cols if c in by_col and by_col[c].get("is_metadata")],
         "skipped_open_text_columns": [c for c in cols if c in by_col and by_col[c].get("is_open_text")],
-        "skipped_text_entry_columns": sorted([c for c in cols if c in by_col and by_col[c].get("is_text_entry_suffix") and c not in written_text_cols and mode_by_text_col.get(c, by_col[c].get("text_reporting_mode", "skip")) != "frequency_text"]),
+        "skipped_text_entry_columns": sorted([c for c in cols if c in by_col and _is_write_in(by_col[c]) and c not in written_text_cols]),
         "skipped_unmapped_columns": [c for c in cols if c not in by_col],
         "empty_output_tables": empty_output_tables,
         "text_entry_outputs": [str(p) for p in outs if "open_text_outputs" in str(p)],
