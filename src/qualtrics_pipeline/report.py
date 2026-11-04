@@ -16,7 +16,6 @@ import csv
 import html
 import json
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -2291,32 +2290,22 @@ if (document.readyState === "loading") {
 """
 
 
-def writein_counts(text_rows: list[dict[str, str]]) -> list[tuple[str, int]]:
-    """Verbatim write-ins collapsed to (response, count), most frequent first."""
-    counts: Counter = Counter()
-    for r in text_rows:
-        value = (r.get("text_response") or "").strip()
-        if value:
-            counts[value] += 1
-    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+def writein_comments(text_rows: list[dict[str, str]]) -> list[str]:
+    """Typed-in answers as written, in the order respondents gave them."""
+    return [v for v in ((r.get("text_response") or "").strip() for r in text_rows) if v]
 
 
 def _render_writein_table(text_rows: list[dict[str, str]]) -> str:
-    """Render write-in / 'Other' responses for a question as a separate table.
-
-    Verbatim responses are aggregated to (response, count) so duplicates
-    collapse, and shown apart from the parent question's choice frequencies.
-    """
-    counts = writein_counts(text_rows)
-    if not counts:
+    """Typed-in "Other" answers for a question, as written: a one-column list of
+    comments with no header row and no counts, shown apart from the question's
+    table of listed options (where "Other" keeps its own row)."""
+    comments = writein_comments(text_rows)
+    if not comments:
         return ""
-    body = "".join(f"<tr><td>{_esc(text)}</td><td class=\"num\">{n}</td></tr>" for text, n in counts)
-    total = sum(n for _t, n in counts)
+    body = "".join(f"<tr><td>{_esc(text)}</td></tr>" for text in comments)
     return (
-        f'<div class="meta">Write-in responses ({total})</div>'
-        '<table class="writein"><thead><tr><th>Write-in response</th>'
-        '<th class="num">Count</th></tr></thead>'
-        f"<tbody>{body}</tbody></table>"
+        f'<div class="meta">Written responses ({len(comments)})</div>'
+        f'<table class="writein"><tbody>{body}</tbody></table>'
     )
 
 
