@@ -84,3 +84,127 @@ def test_build_column_map_strips_html_from_question_text() -> None:
     }
     cmap = build_column_map("SV_1", ["Q1"], meta)
     assert cmap[0]["question_text"] == "Please indicate your sex:"
+
+
+# --- non-substantive (N/A-type) response codes -------------------------------------
+
+import json  # noqa: E402
+
+from qualtrics_pipeline.export import annotate_run, non_substantive_info  # noqa: E402
+
+
+def test_single_answer_mc_flags_exclude_from_analysis_and_na_labels() -> None:
+    meta = {
+        "QID5": {
+            "DataExportTag": "Q5",
+            "QuestionType": "MC",
+            "Selector": "SAVR",
+            "QuestionText": "How well did it fit?",
+            "Choices": {
+                "1": {"Display": "Poor"},
+                "2": {"Display": "Good"},
+                "3": {"Display": "Not applicable"},
+                "4": {"Display": "Did not wear it"},
+            },
+            "RecodeValues": {"3": "-1", "4": "99"},
+            "AnalyzeChoices": {"4": "on"},
+        }
+    }
+    row = build_column_map("SV_1", ["Q5"], meta)[0]
+    assert row["non_substantive_codes"] == ["-1", "99"]
+    assert row["non_substantive_reasons"] == {
+        "-1": "label_match",
+        "99": "qualtrics_exclude_from_analysis",
+    }
+    assert row["is_non_substantive_option"] is False
+    # The labels themselves are untouched.
+    assert row["response_labels"]["-1"] == "Not applicable"
+
+
+def test_multi_select_column_for_na_option_is_marked() -> None:
+    # Shape of a real survey question: last option is N/A and excluded from analysis.
+    meta = {
+        "QID22": {
+            "DataExportTag": "Q1.14",
+            "QuestionType": "MC",
+            "Selector": "MAVR",
+            "QuestionText": "Which have you worn?",
+            "Choices": {
+                "1": {"Display": "Uniform A"},
+                "6": {"Display": "N/A (I do not have experience with FR uniforms)"},
+            },
+            "AnalyzeChoices": {"6": "on"},
+        }
+    }
+    cmap = build_column_map("SV_1", ["Q1.14_1", "Q1.14_6"], meta)
+    assert cmap[0]["is_non_substantive_option"] is False
+    assert cmap[1]["is_non_substantive_option"] is True
+    assert cmap[1]["non_substantive_codes"] == []  # 0/1 selected codes stay substantive
+
+
+def test_matrix_scale_point_labels_are_matched() -> None:
+    meta = {
+        "QID9": {
+            "DataExportTag": "Q9",
+            "QuestionType": "Matrix",
+            "QuestionText": "Rate the impact",
+            "Choices": {"1": {"Display": "Standing"}},
+            "Answers": {
+                "1": {"Display": "No impact"},
+                "5": {"Display": "Severe impact"},
+                "6": {"Display": "N/A"},
+                "7": {"Display": "Don't know"},
+            },
+        }
+    }
+    row = build_column_map("SV_1", ["Q9_1"], meta)[0]
+    assert row["non_substantive_codes"] == ["6", "7"]
+
+
+def test_label_patterns_avoid_false_positives_and_are_extendable() -> None:
+    q = {
+        "QuestionType": "MC",
+        "Selector": "SAVR",
+        "Choices": {
+            "1": {"Display": "NATO operations"},
+            "2": {"Display": "Banana"},
+            "3": {"Display": "Unsure"},
+        },
+    }
+    assert non_substantive_info("Q1", q)["non_substantive_codes"] == []
+    extended = non_substantive_info("Q1", q, [r"^\s*unsure\s*$"])
+    assert extended["non_substantive_codes"] == ["3"]
+
+
+def test_text_entry_and_unmatched_columns_have_empty_fields() -> None:
+    meta = {
+        "QID5": {
+            "DataExportTag": "Q5",
+            "QuestionType": "MC",
+            "Selector": "SAVR",
+            "Choices": {"1": {"Display": "Other"}, "2": {"Display": "N/A"}},
+        }
+    }
+    cmap = build_column_map("SV_1", ["Q5_1_TEXT", "StartDate"], meta)
+    for row in cmap:
+        assert row["non_substantive_codes"] == []
+        assert row["non_substantive_reasons"] == {}
+        assert row["is_non_substantive_option"] is False
+
+
+def test_annotate_run_updates_existing_column_map(tmp_path) -> None:
+    meta = {
+        "QID5": {
+            "DataExportTag": "Q5",
+            "QuestionType": "MC",
+            "Selector": "SAVR",
+            "Choices": {"1": {"Display": "Yes"}, "2": {"Display": "N/A"}},
+        }
+    }
+    old_row = {"column": "Q5", "qid": "QID5", "response_labels": {"1": "Yes", "2": "N/A"}}
+    (tmp_path / "column_map.json").write_text(json.dumps([old_row]), encoding="utf-8")
+    (tmp_path / "questions_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert annotate_run(tmp_path) == 1
+    row = json.loads((tmp_path / "column_map.json").read_text(encoding="utf-8"))[0]
+    assert row["non_substantive_codes"] == ["2"]
+    assert row["response_labels"] == {"1": "Yes", "2": "N/A"}  # other fields kept
