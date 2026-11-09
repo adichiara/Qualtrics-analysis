@@ -1,4 +1,12 @@
-from qualtrics_pipeline.export import _strip_html, build_column_map, build_run_manifest
+import json
+
+from qualtrics_pipeline.export import (
+    _strip_html,
+    annotate_run,
+    build_column_map,
+    build_run_manifest,
+    non_substantive_info,
+)
 
 
 def test_build_column_map_multi_answer_mc_binary_labels() -> None:
@@ -87,11 +95,6 @@ def test_build_column_map_strips_html_from_question_text() -> None:
 
 
 # --- non-substantive (N/A-type) response codes -------------------------------------
-
-import json  # noqa: E402
-
-from qualtrics_pipeline.export import annotate_run, non_substantive_info  # noqa: E402
-
 
 def test_single_answer_mc_flags_exclude_from_analysis_and_na_labels() -> None:
     meta = {

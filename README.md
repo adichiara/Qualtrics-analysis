@@ -149,6 +149,37 @@ Data files by privacy mode:
 - `internal`: `responses_raw.csv` + `responses_clean.csv`
 - `raw`: `responses_raw.csv` only
 
+### Non-substantive responses (N/A, Don't know)
+
+Every column in `column_map.json` says which of its responses are not substantive
+answers, so downstream analyses (means, tests) can leave them out while the responses
+themselves stay in the data:
+
+| Field | Meaning |
+|---|---|
+| `non_substantive_codes` | Response codes to leave out of analyses, e.g. `["-1", "99"]`. Single-answer MC uses the choice's recode value; a Matrix column uses its scale-point code. |
+| `non_substantive_reasons` | `{code: reason}`: `qualtrics_exclude_from_analysis` (the choice is marked *Exclude from analysis* in the Qualtrics editor) or `label_match` (its label matches a pattern below). |
+| `is_non_substantive_option` | For a multi-select column: `true` when the option it records is itself an N/A option (e.g. "N/A (I do not have experience…)"). |
+
+Codes are found two ways:
+
+- **Qualtrics' "Exclude from analysis" flag** on a multiple-choice option (stored in the
+  survey definition's `AnalyzeChoices`). On a Matrix question the flag may refer to its
+  rows, so Matrix scale points are matched by label only.
+- **Response labels** matching, case-insensitively: `N/A`, a bare `NA`, `Not applicable`,
+  `Don't know` / `Do not know`, `Prefer not to answer/say/respond`, `No opinion`. Add
+  your own with `--non-substantive-pattern REGEX` (repeatable).
+
+`codebook.csv` carries `non_substantive_codes` and `is_non_substantive_option` too. Nothing
+is recoded or removed; the frequency tables are unchanged (use `hide_codes` to hide a code
+there).
+
+To add these fields to a run exported before they existed, without exporting again:
+
+```bash
+python -m qualtrics_pipeline.export --annotate-run runs/<run>
+```
+
 ## Frequency stage
 
 Initialize config from column map:
